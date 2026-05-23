@@ -27,6 +27,8 @@ class AppNameResolution:
     """Resolved app names plus counters explaining where the names came from."""
 
     names: dict[str, str]
+    unknown_app_ids: list[str]
+    override_hits: int = 0
     local_hits: int = 0
     remote_hits: int = 0
     cache_hits: int = 0
@@ -37,6 +39,7 @@ def resolve_app_names(
     app_ids: set[str],
     steam_root: Path,
     cache_path: Path,
+    overrides_path: Path,
     shortcut_names: dict[str, str] | None = None,
 ) -> AppNameResolution:
     """Resolve each app ID using local data, cache, remote lookup, then fallback.
@@ -46,12 +49,18 @@ def resolve_app_names(
     Store request, and finally ``Steam App <appid>``.
     """
 
+    overrides = load_name_overrides(overrides_path)
     shortcut_names = shortcut_names or {}
     cache = _load_name_cache(cache_path)
     library_paths = find_steam_library_paths(steam_root)
 
-    result = AppNameResolution(names={})
+    result = AppNameResolution(names={}, unknown_app_ids=[])
     for app_id in sorted(app_ids):
+        if app_id in overrides:
+            result.names[app_id] = overrides[app_id]
+            result.override_hits += 1
+            continue
+
         if app_id in shortcut_names:
             result.names[app_id] = shortcut_names[app_id]
             result.local_hits += 1
@@ -77,12 +86,37 @@ def resolve_app_names(
             continue
 
         result.names[app_id] = f"Steam App {app_id}"
+        result.unknown_app_ids.append(app_id)
         result.fallbacks += 1
+        logger.warning(
+            "Unknown Steam app id %s. Add it to %s to name it manually.",
+            app_id,
+            overrides_path,
+        )
 
     if result.remote_hits:
         _save_name_cache(cache_path, cache)
 
     return result
+
+
+def load_name_overrides(overrides_path: Path) -> dict[str, str]:
+    """Load user-maintained app ID name overrides from JSON."""
+
+    if not overrides_path.exists():
+        return {}
+
+    try:
+        data = json.loads(overrides_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Could not read app name overrides %s: %s", overrides_path, error)
+        return {}
+
+    if not isinstance(data, dict):
+        logger.warning("App name overrides must be a JSON object: %s", overrides_path)
+        return {}
+
+    return {str(app_id): str(name) for app_id, name in data.items() if name}
 
 
 def find_steam_library_paths(steam_root: Path) -> list[Path]:

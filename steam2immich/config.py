@@ -21,6 +21,7 @@ class Config:
     steam_user_id: str
     steam_uncompressed_dir: Path | None
     output_dir: Path
+    app_names_overrides_path: Path
     dry_run: bool
     album_mode: str
     single_album_name: str
@@ -39,6 +40,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--steam-user-id")
     parser.add_argument("--uncompressed-dir")
     parser.add_argument("--output-dir")
+    parser.add_argument("--app-names-overrides")
     return parser
 
 
@@ -61,6 +63,14 @@ def load_config(cli_args: argparse.Namespace | None = None) -> Config:
         ),
         output_dir=Path(
             _get_value(cli_args, "output_dir", "OUTPUT_DIR", "workdir")
+        ).expanduser(),
+        app_names_overrides_path=Path(
+            _get_value(
+                cli_args,
+                "app_names_overrides",
+                "APP_NAMES_OVERRIDES",
+                "workdir/app_names_overrides.json",
+            )
         ).expanduser(),
         dry_run=_get_bool(cli_args, "dry_run", "DRY_RUN", False),
         album_mode=_get_value(cli_args, "album_mode", "ALBUM_MODE", "single"),

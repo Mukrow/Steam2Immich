@@ -50,15 +50,22 @@ def main() -> int:
         app_ids=app_ids,
         steam_root=config.steam_root,
         cache_path=config.output_dir / "app_names_cache.json",
+        overrides_path=config.app_names_overrides_path,
         shortcut_names=parse_shortcut_names(config.steam_root, config.steam_user_id),
     )
     logger.info(
-        "Resolved game names: local=%d cache=%d remote=%d fallback=%d",
+        "Resolved game names: overrides=%d local=%d cache=%d remote=%d fallback=%d",
+        app_name_resolution.override_hits,
         app_name_resolution.local_hits,
         app_name_resolution.cache_hits,
         app_name_resolution.remote_hits,
         app_name_resolution.fallbacks,
     )
+    if app_name_resolution.unknown_app_ids:
+        logger.warning(
+            "Unknown Steam app ids: %s",
+            ", ".join(app_name_resolution.unknown_app_ids),
+        )
 
     logger.info("Building screenshot candidates.")
     candidates = build_screenshot_candidates(
