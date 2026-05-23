@@ -1,8 +1,8 @@
 import logging
 from pathlib import Path
 
-from models import ScreenshotCandidate
-from scanner import SUPPORTED_EXTENSIONS, extract_app_id_from_path
+from .models import ScreenshotCandidate
+from .scanner import SUPPORTED_EXTENSIONS, extract_app_id_from_path
 
 
 logger = logging.getLogger("steam2immich.matcher")

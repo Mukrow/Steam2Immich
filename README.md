@@ -46,13 +46,13 @@ missing.
 Dry run with `.env` configuration:
 
 ```bash
-python main.py --dry-run --log-level DEBUG
+python -m steam2immich.main --dry-run --log-level DEBUG
 ```
 
 Dry run with explicit paths:
 
 ```bash
-python main.py --dry-run --log-level DEBUG --steam-user-id <steam_user_id> --steam-root "<steam_root>" --uncompressed-dir "<screenshots_dir>"
+python -m steam2immich.main --dry-run --log-level DEBUG --steam-user-id <steam_user_id> --steam-root "<steam_root>" --uncompressed-dir "<screenshots_dir>"
 ```
 
 Supported CLI arguments:
@@ -129,11 +129,13 @@ Not implemented yet:
 ## Project Structure
 
 ```text
-main.py          CLI entrypoint and dry-run orchestration
-config.py        config dataclass, CLI args, env loading, defaults
-models.py        shared dataclasses
-logger.py        console and file logging setup
-scanner.py       normal Steam screenshot discovery
-matcher.py       uncompressed screenshot matching and candidate building
-workdir/         generated runtime output, ignored except .gitkeep
+steam2immich/
+  __init__.py
+  main.py       CLI entrypoint and dry-run orchestration
+  config.py     config dataclass, CLI args, env loading, defaults
+  models.py     shared dataclasses
+  logger.py     console and file logging setup
+  scanner.py    normal Steam screenshot discovery
+  matcher.py    uncompressed screenshot matching and candidate building
+workdir/        generated runtime output, ignored except .gitkeep
 ```

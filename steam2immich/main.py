@@ -1,11 +1,11 @@
 import logging
 import sys
 
-from config import build_arg_parser, load_config
-from logger import setup_logging
-from matcher import build_screenshot_candidates
-from models import SyncSummary
-from scanner import find_normal_screenshots
+from .config import build_arg_parser, load_config
+from .logger import setup_logging
+from .matcher import build_screenshot_candidates
+from .models import SyncSummary
+from .scanner import find_normal_screenshots
 
 
 logger = logging.getLogger("steam2immich")
