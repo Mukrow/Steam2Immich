@@ -3,11 +3,11 @@
 Local Python tooling for discovering Steam screenshots and preparing a future
 Immich upload flow.
 
-Current status: discovery and local preparation work. The script finds Steam
-screenshots, parses Steam screenshot metadata, resolves game names, matches
-uncompressed copies when available, logs progress to both console and a file,
-and prints a summary. It can prepare upload copies locally, but it does not
-upload to Immich yet.
+Current status: discovery, local preparation, and Immich upload work. The script
+finds Steam screenshots, parses Steam screenshot metadata, resolves game names,
+matches uncompressed copies when available, prepares metadata-enriched upload
+copies, uploads them to Immich, adds them to albums, logs progress to both
+console and a file, and prints a summary.
 
 ## Requirements
 
@@ -35,6 +35,8 @@ Important environment variables:
 STEAM2IMMICH_STEAM_ROOT=C:\Program Files (x86)\Steam
 STEAM2IMMICH_STEAM_USER_ID=
 STEAM2IMMICH_UNCOMPRESSED_DIR=
+STEAM2IMMICH_IMMICH_BASE_URL=
+STEAM2IMMICH_IMMICH_API_KEY=
 STEAM2IMMICH_OUTPUT_DIR=workdir
 STEAM2IMMICH_APP_NAMES_OVERRIDES=workdir/app_names_overrides.json
 STEAM2IMMICH_DRY_RUN=true
@@ -67,6 +69,20 @@ Supported CLI arguments:
 - `--steam-user-id <id>`
 - `--uncompressed-dir <path>`
 - `--output-dir <path>`
+- `--app-id <app_id>`
+- `--limit <number>`
+
+Before the first real upload, use filters to preview and upload a small sample:
+
+```bash
+python -m steam2immich.main --dry-run --log-level INFO --app-id 1086940 --limit 1
+```
+
+Then upload exactly that small sample:
+
+```bash
+python -m steam2immich.main --log-level INFO --app-id 1086940 --limit 1
+```
 
 ## What It Does Today
 
@@ -151,8 +167,43 @@ The app copies each chosen file there and writes metadata only to the prepared
 copy. Steam originals and uncompressed originals are never modified.
 
 Metadata writing is best-effort. If metadata writing fails, the copied file is
-kept and the app logs a warning. Immich upload is still not implemented, so
-non-dry-run currently makes no API calls.
+kept and the app logs a warning.
+
+Non-dry-run uploads prepared copies to Immich, creates or reuses albums, adds
+uploaded assets to the selected album, and applies Steam tags. Dry-run never
+calls Immich.
+
+Required Immich API key permissions:
+
+- `asset.upload`
+- `album.read`
+- `album.create`
+- `albumAsset.create`
+- `tag.read`
+- `tag.create`
+- `tag.asset`
+
+Optional future permission:
+
+- `asset.read` for server-side duplicate checks
+
+The first duplicate/idempotency layer is local state:
+
+```text
+workdir/upload_state.json
+```
+
+If a generated device asset ID already exists in that file, the app skips that
+asset on later runs.
+
+Uploaded assets receive these Immich tags:
+
+- `Steam`
+- `Steam/<game name>`
+- `Steam App/<app_id>`
+
+Tag assignment is best-effort. If tags fail after upload, the upload remains
+recorded in local state to avoid duplicate uploads on rerun.
 
 ## Logging
 
@@ -185,14 +236,15 @@ Implemented:
 - uncompressed screenshot matching
 - local upload-copy preparation under `workdir/prepared`
 - best-effort metadata writing on prepared copies only
+- Immich upload and album assignment
+- Immich tag assignment for Steam metadata
+- local upload state for rerun/idempotency skips
 - candidate summaries for dry runs
 - `.gitignore` for local secrets, virtualenvs, caches, logs, and generated workdir output
 
 Not implemented yet:
 
-- Immich API upload
-- album creation and assignment
-- duplicate/idempotency handling
+- server-side duplicate checks
 
 ## Project Structure
 
@@ -209,5 +261,7 @@ steam2immich/
   steam_apps.py Steam app name resolution
   report_writer.py dry-run CSV report writing
   metadata_writer.py upload-copy preparation and metadata writing
+  immich_client.py Immich upload and album API client
+  upload_state.py local upload idempotency state
 workdir/        generated runtime output, ignored except .gitkeep
 ```

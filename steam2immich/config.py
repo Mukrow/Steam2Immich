@@ -27,6 +27,8 @@ class Config:
     single_album_name: str
     album_prefix: str
     log_level: str
+    limit: int | None
+    app_id_filter: str | None
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -41,6 +43,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--uncompressed-dir")
     parser.add_argument("--output-dir")
     parser.add_argument("--app-names-overrides")
+    parser.add_argument("--limit", type=_positive_int)
+    parser.add_argument("--app-id")
     return parser
 
 
@@ -79,6 +83,8 @@ def load_config(cli_args: argparse.Namespace | None = None) -> Config:
         ),
         album_prefix=_get_value(cli_args, "album_prefix", "ALBUM_PREFIX", "Steam -"),
         log_level=_get_value(cli_args, "log_level", "LOG_LEVEL", "INFO"),
+        limit=_get_optional_int(cli_args, "limit", "LIMIT"),
+        app_id_filter=_get_value(cli_args, "app_id", "APP_ID", ""),
     )
 
 
@@ -114,6 +120,27 @@ def _get_optional_path(value: str) -> Path | None:
     if not value:
         return None
     return Path(value).expanduser()
+
+
+def _get_optional_int(
+    cli_args: argparse.Namespace, cli_name: str, env_name: str
+) -> int | None:
+    cli_value = getattr(cli_args, cli_name, None)
+    if cli_value is not None:
+        return cli_value
+
+    env_value = os.getenv(f"{ENV_PREFIX}{env_name}")
+    if env_value in (None, ""):
+        return None
+
+    return _positive_int(env_value)
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def _default_steam_root() -> Path:
