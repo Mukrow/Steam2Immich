@@ -3,10 +3,11 @@
 Local Python tooling for discovering Steam screenshots and preparing a future
 Immich upload flow.
 
-Current status: dry-run discovery works. The script finds Steam screenshots,
-parses Steam screenshot metadata, resolves game names, matches uncompressed
-copies when available, logs progress to both console and a file, and prints a
-summary. It does not upload to Immich yet.
+Current status: discovery and local preparation work. The script finds Steam
+screenshots, parses Steam screenshot metadata, resolves game names, matches
+uncompressed copies when available, logs progress to both console and a file,
+and prints a summary. It can prepare upload copies locally, but it does not
+upload to Immich yet.
 
 ## Requirements
 
@@ -140,6 +141,19 @@ uncompressed path, chosen path, timestamp, and caption. It is useful for
 auditing what would be processed before the app starts copying files or
 uploading to Immich.
 
+Non-dry-run mode prepares local upload copies under:
+
+```text
+workdir/prepared/<app_id>/
+```
+
+The app copies each chosen file there and writes metadata only to the prepared
+copy. Steam originals and uncompressed originals are never modified.
+
+Metadata writing is best-effort. If metadata writing fails, the copied file is
+kept and the app logs a warning. Immich upload is still not implemented, so
+non-dry-run currently makes no API calls.
+
 ## Logging
 
 Logs are written to the console and to timestamped files under:
@@ -169,13 +183,13 @@ Implemented:
 - manual game-name overrides for external/non-Steam games
 - app id extraction from Steam screenshot paths
 - uncompressed screenshot matching
+- local upload-copy preparation under `workdir/prepared`
+- best-effort metadata writing on prepared copies only
 - candidate summaries for dry runs
 - `.gitignore` for local secrets, virtualenvs, caches, logs, and generated workdir output
 
 Not implemented yet:
 
-- copying chosen files into `workdir`
-- metadata writing
 - Immich API upload
 - album creation and assignment
 - duplicate/idempotency handling
@@ -194,5 +208,6 @@ steam2immich/
   vdf_parser.py Steam screenshots.vdf metadata parsing
   steam_apps.py Steam app name resolution
   report_writer.py dry-run CSV report writing
+  metadata_writer.py upload-copy preparation and metadata writing
 workdir/        generated runtime output, ignored except .gitkeep
 ```

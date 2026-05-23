@@ -4,6 +4,7 @@ import sys
 from .config import build_arg_parser, load_config
 from .logger import setup_logging
 from .matcher import build_screenshot_candidates
+from .metadata_writer import prepare_upload_copy
 from .models import SyncSummary
 from .report_writer import write_dry_run_report
 from .scanner import extract_app_id_from_path, find_normal_screenshots
@@ -100,6 +101,21 @@ def main() -> int:
         report_path = write_dry_run_report(candidates, config.output_dir / "reports")
         if report_path is not None:
             logger.info("Wrote dry-run report to %s", report_path)
+    else:
+        logger.info("Preparing upload copies under %s", config.output_dir / "prepared")
+        logger.info("Immich upload is not implemented yet; no API calls will be made.")
+        for candidate in candidates:
+            try:
+                prepared_asset = prepare_upload_copy(candidate, config.output_dir)
+                logger.debug(
+                    "Prepared asset app_id=%s metadata_written=%s path=%s",
+                    candidate.app_id,
+                    prepared_asset.metadata_written,
+                    prepared_asset.prepared_path,
+                )
+            except OSError as error:
+                summary.failed += 1
+                logger.warning("Could not prepare upload copy for %s: %s", candidate.chosen_path, error)
 
     logger.info("Discovered %d Steam screenshot(s).", summary.found)
     print_summary(summary)
