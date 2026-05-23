@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-from .models import ScreenshotCandidate
+from .models import ScreenshotCandidate, SteamScreenshot
 from .scanner import SUPPORTED_EXTENSIONS, extract_app_id_from_path
 
 
@@ -9,11 +9,16 @@ logger = logging.getLogger("steam2immich.matcher")
 
 
 def build_screenshot_candidates(
-    normal_paths: list[Path], uncompressed_dir: Path | None = None
+    normal_paths: list[Path],
+    uncompressed_dir: Path | None = None,
+    vdf_screenshots: list[SteamScreenshot] | None = None,
+    app_names: dict[str, str] | None = None,
 ) -> list[ScreenshotCandidate]:
     candidates: list[ScreenshotCandidate] = []
     seen_normal_paths: set[Path] = set()
     uncompressed_index = build_uncompressed_index(uncompressed_dir)
+    vdf_index = _index_vdf_screenshots(vdf_screenshots or [])
+    app_names = app_names or {}
 
     for normal_path in normal_paths:
         resolved_normal_path = normal_path.resolve()
@@ -24,6 +29,10 @@ def build_screenshot_candidates(
         seen_normal_paths.add(resolved_normal_path)
 
         app_id = extract_app_id_from_path(normal_path) or "unknown"
+        vdf_screenshot = vdf_index.get(resolved_normal_path)
+        if vdf_screenshot is not None:
+            app_id = vdf_screenshot.app_id
+
         uncompressed_path = find_uncompressed_match_from_index(
             normal_path, uncompressed_index
         )
@@ -32,16 +41,30 @@ def build_screenshot_candidates(
         candidates.append(
             ScreenshotCandidate(
                 app_id=app_id,
-                game_name=f"Steam App {app_id}",
+                game_name=app_names.get(app_id, f"Steam App {app_id}"),
                 normal_path=normal_path,
                 uncompressed_path=uncompressed_path,
                 chosen_path=chosen_path,
-                timestamp=None,
-                caption=None,
+                timestamp=vdf_screenshot.timestamp if vdf_screenshot else None,
+                caption=vdf_screenshot.caption if vdf_screenshot else None,
             )
         )
 
     return candidates
+
+
+def _index_vdf_screenshots(
+    vdf_screenshots: list[SteamScreenshot],
+) -> dict[Path, SteamScreenshot]:
+    index: dict[Path, SteamScreenshot] = {}
+
+    for screenshot in vdf_screenshots:
+        if screenshot.normal_path is None:
+            continue
+
+        index[screenshot.normal_path.resolve()] = screenshot
+
+    return index
 
 
 def build_uncompressed_index(uncompressed_dir: Path | None) -> dict[str, Path]:

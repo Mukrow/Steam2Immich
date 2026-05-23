@@ -4,8 +4,9 @@ Local Python tooling for discovering Steam screenshots and preparing a future
 Immich upload flow.
 
 Current status: dry-run discovery works. The script finds Steam screenshots,
-matches uncompressed copies when available, logs progress to both console and a
-file, and prints a summary. It does not upload to Immich yet.
+parses Steam screenshot metadata, resolves game names, matches uncompressed
+copies when available, logs progress to both console and a file, and prints a
+summary. It does not upload to Immich yet.
 
 ## Requirements
 
@@ -67,13 +68,37 @@ Supported CLI arguments:
 
 ## What It Does Today
 
-The scanner finds normal Steam screenshots under:
+The scanner finds normal Steam screenshots on disk under:
 
 ```text
 <steam-root>/userdata/<steam-user-id>/760/remote/*/screenshots/*
 ```
 
 Supported extensions are `.jpg`, `.jpeg`, `.png`, and `.webp`.
+
+The disk scan is the source of truth for which files currently exist. Steam's
+`screenshots.vdf` is parsed as metadata only, from:
+
+```text
+<steam-root>/userdata/<steam-user-id>/760/screenshots.vdf
+```
+
+When available, VDF metadata enriches candidates with:
+
+- Steam app id
+- normal screenshot path
+- thumbnail path
+- creation timestamp
+- caption or description fields if present
+- raw Steam metadata for future use
+
+Game names are resolved in this order:
+
+1. local Steam shortcut names from `screenshots.vdf`
+2. local `appmanifest_<appid>.acf` files from all Steam library folders
+3. cached remote Steam Store lookups in `workdir/app_names_cache.json`
+4. read-only remote Steam Store lookup
+5. fallback name: `Steam App <appid>`
 
 The matcher then builds screenshot candidates and prefers uncompressed copies
 when configured. For example:
@@ -111,6 +136,9 @@ Implemented:
 - configuration loading from CLI, `.env`, and defaults
 - standard logging plus file logs
 - Steam normal screenshot discovery
+- Steam `screenshots.vdf` metadata parsing
+- local Steam library/app manifest game-name resolution
+- remote Steam Store game-name fallback with a local cache
 - app id extraction from Steam screenshot paths
 - uncompressed screenshot matching
 - candidate summaries for dry runs
@@ -118,8 +146,6 @@ Implemented:
 
 Not implemented yet:
 
-- parsing `screenshots.vdf`
-- game names, captions, and timestamps from Steam metadata
 - copying chosen files into `workdir`
 - metadata writing
 - Immich API upload
@@ -137,5 +163,7 @@ steam2immich/
   logger.py     console and file logging setup
   scanner.py    normal Steam screenshot discovery
   matcher.py    uncompressed screenshot matching and candidate building
+  vdf_parser.py Steam screenshots.vdf metadata parsing
+  steam_apps.py Steam app name resolution
 workdir/        generated runtime output, ignored except .gitkeep
 ```

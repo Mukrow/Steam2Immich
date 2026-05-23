@@ -31,6 +31,9 @@ class SyncSummary:
     found: int = 0
     using_uncompressed: int = 0
     using_normal: int = 0
+    app_ids_total: int = 0
+    app_ids_identified: int = 0
+    app_ids_unknown: int = 0
     uploaded: int = 0
     skipped: int = 0
     failed: int = 0

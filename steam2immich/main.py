@@ -5,7 +5,9 @@ from .config import build_arg_parser, load_config
 from .logger import setup_logging
 from .matcher import build_screenshot_candidates
 from .models import SyncSummary
-from .scanner import find_normal_screenshots
+from .scanner import extract_app_id_from_path, find_normal_screenshots
+from .steam_apps import resolve_app_names
+from .vdf_parser import parse_screenshots_vdf, parse_shortcut_names
 
 
 logger = logging.getLogger("steam2immich")
@@ -28,25 +30,58 @@ def main() -> int:
         )
         return 2
 
+    logger.info("Parsing Steam screenshots.vdf metadata.")
+    vdf_screenshots = parse_screenshots_vdf(config.steam_root, config.steam_user_id)
+    logger.info("Parsed %d screenshot metadata entries from VDF.", len(vdf_screenshots))
+
     logger.info("Discovering normal Steam screenshots under %s", config.steam_root)
     screenshots = find_normal_screenshots(config.steam_root, config.steam_user_id)
     logger.info("Found %d normal Steam screenshot file(s).", len(screenshots))
 
+    app_ids = {screenshot.app_id for screenshot in vdf_screenshots if screenshot.app_id}
+    for screenshot in screenshots:
+        app_id = extract_app_id_from_path(screenshot)
+        if app_id:
+            app_ids.add(app_id)
+
+    logger.info("Resolving game names for %d Steam app id(s).", len(app_ids))
+    app_name_resolution = resolve_app_names(
+        app_ids=app_ids,
+        steam_root=config.steam_root,
+        cache_path=config.output_dir / "app_names_cache.json",
+        shortcut_names=parse_shortcut_names(config.steam_root, config.steam_user_id),
+    )
+    logger.info(
+        "Resolved game names: local=%d cache=%d remote=%d fallback=%d",
+        app_name_resolution.local_hits,
+        app_name_resolution.cache_hits,
+        app_name_resolution.remote_hits,
+        app_name_resolution.fallbacks,
+    )
+
     logger.info("Building screenshot candidates.")
     candidates = build_screenshot_candidates(
-        screenshots, uncompressed_dir=config.steam_uncompressed_dir
+        screenshots,
+        uncompressed_dir=config.steam_uncompressed_dir,
+        vdf_screenshots=vdf_screenshots,
+        app_names=app_name_resolution.names,
     )
     using_uncompressed = sum(1 for candidate in candidates if candidate.uncompressed_path)
     summary = SyncSummary(
         found=len(candidates),
         using_uncompressed=using_uncompressed,
         using_normal=len(candidates) - using_uncompressed,
+        app_ids_total=len(app_ids),
+        app_ids_identified=len(app_ids) - app_name_resolution.fallbacks,
+        app_ids_unknown=app_name_resolution.fallbacks,
     )
 
     for candidate in candidates:
         logger.debug(
-            "Screenshot candidate app_id=%s normal_path=%s uncompressed_path=%s chosen_path=%s",
+            "Screenshot candidate app_id=%s game_name=%s timestamp=%s normal_path=%s uncompressed_path=%s chosen_path=%s",
             candidate.app_id,
+            candidate.game_name,
+            candidate.timestamp,
             candidate.normal_path,
             candidate.uncompressed_path,
             candidate.chosen_path,
@@ -65,6 +100,9 @@ def print_summary(summary: SyncSummary) -> None:
     print(f"  Found: {summary.found}")
     print(f"  Using uncompressed: {summary.using_uncompressed}")
     print(f"  Using normal: {summary.using_normal}")
+    print(f"  App IDs total: {summary.app_ids_total}")
+    print(f"  App IDs identified: {summary.app_ids_identified}")
+    print(f"  App IDs unknown: {summary.app_ids_unknown}")
     print(f"  Uploaded: {summary.uploaded}")
     print(f"  Skipped: {summary.skipped}")
     print(f"  Failed: {summary.failed}")
