@@ -5,6 +5,7 @@ from .config import build_arg_parser, load_config
 from .logger import setup_logging
 from .matcher import build_screenshot_candidates
 from .models import SyncSummary
+from .report_writer import write_dry_run_report
 from .scanner import extract_app_id_from_path, find_normal_screenshots
 from .steam_apps import resolve_app_names
 from .vdf_parser import parse_screenshots_vdf, parse_shortcut_names
@@ -89,6 +90,9 @@ def main() -> int:
 
     if config.dry_run:
         logger.info("Dry run enabled. No uploads or file changes will be performed.")
+        report_path = write_dry_run_report(candidates, config.output_dir / "reports")
+        if report_path is not None:
+            logger.info("Wrote dry-run report to %s", report_path)
 
     logger.info("Discovered %d Steam screenshot(s).", summary.found)
     print_summary(summary)

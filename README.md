@@ -113,6 +113,17 @@ file stem. If multiple uncompressed matches exist, the largest file is selected.
 
 Dry run performs no uploads, no metadata writes, and no file copies.
 
+Dry run also writes a CSV report under:
+
+```text
+workdir/reports/
+```
+
+The report lists each candidate's app id, game name, normal path,
+uncompressed path, chosen path, timestamp, and caption. It is useful for
+auditing what would be processed before the app starts copying files or
+uploading to Immich.
+
 ## Logging
 
 Logs are written to the console and to timestamped files under:
@@ -165,5 +176,6 @@ steam2immich/
   matcher.py    uncompressed screenshot matching and candidate building
   vdf_parser.py Steam screenshots.vdf metadata parsing
   steam_apps.py Steam app name resolution
+  report_writer.py dry-run CSV report writing
 workdir/        generated runtime output, ignored except .gitkeep
 ```
