@@ -143,16 +143,36 @@ def _run_uploads(
         return 2
 
     upload_state = UploadState(config.output_dir / "upload_state.json")
+    candidate_asset_ids = [
+        (candidate, build_device_asset_id(candidate)) for candidate in candidates
+    ]
+    try:
+        server_existing_ids = immich_client.check_existing_assets(
+            [device_asset_id for _, device_asset_id in candidate_asset_ids]
+        )
+    except ImmichClientError as error:
+        logger.error("Could not check existing Immich assets: %s", error)
+        return 2
 
     logger.info("Preparing upload copies under %s", config.output_dir / "prepared")
-    for candidate in candidates:
-        _upload_candidate(candidate, config, summary, immich_client, upload_state)
+    for candidate, device_asset_id in candidate_asset_ids:
+        _upload_candidate(
+            candidate,
+            device_asset_id,
+            server_existing_ids,
+            config,
+            summary,
+            immich_client,
+            upload_state,
+        )
 
     return 0
 
 
 def _upload_candidate(
     candidate: ScreenshotCandidate,
+    device_asset_id: str,
+    server_existing_ids: set[str],
     config: Config,
     summary: SyncSummary,
     immich_client: ImmichClient,
@@ -160,11 +180,19 @@ def _upload_candidate(
 ) -> None:
     """Prepare and upload one candidate, including album and tag follow-ups."""
 
-    device_asset_id = build_device_asset_id(candidate)
     if upload_state.has(device_asset_id):
         summary.skipped += 1
         logger.debug(
-            "Skipping already-uploaded asset device_asset_id=%s path=%s",
+            "Skipping locally-recorded asset device_asset_id=%s path=%s",
+            device_asset_id,
+            candidate.chosen_path,
+        )
+        return
+
+    if device_asset_id in server_existing_ids:
+        summary.skipped += 1
+        logger.info(
+            "Skipping Immich-existing asset device_asset_id=%s path=%s",
             device_asset_id,
             candidate.chosen_path,
         )

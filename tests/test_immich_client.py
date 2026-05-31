@@ -4,6 +4,7 @@ from conftest import FakeResponse, FakeSession
 
 from steam2immich.immich_client import (
     ImmichClient,
+    ImmichClientError,
     album_name_for_candidate,
     build_device_asset_id,
     tag_names_for_candidate,
@@ -60,3 +61,45 @@ def test_get_or_create_tag_creates_missing_tag() -> None:
     assert client.get_or_create_tag("Steam") == "tag-id"
     assert client.get_or_create_tag("Steam") == "tag-id"
     assert [call[0] for call in session.calls] == ["get", "post"]
+
+
+def test_check_existing_assets_posts_device_asset_ids() -> None:
+    # Existing-asset checks should ask Immich which local device asset IDs it already has.
+    session = FakeSession(
+        {
+            "get": [],
+            "post": [FakeResponse({"existingIds": ["device-id-1"]})],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    existing_ids = client.check_existing_assets(["device-id-1", "device-id-2"])
+
+    assert existing_ids == {"device-id-1"}
+    method, url, kwargs = session.calls[0]
+    assert method == "post"
+    assert url == "https://immich.example/api/assets/exist"
+    assert kwargs["json"] == {
+        "deviceAssetIds": ["device-id-1", "device-id-2"],
+        "deviceId": "steam2immich",
+    }
+
+
+def test_check_existing_assets_rejects_invalid_payload() -> None:
+    # Existing-asset responses must include an existingIds list.
+    session = FakeSession(
+        {
+            "get": [],
+            "post": [FakeResponse({"existingIds": "device-id-1"})],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    try:
+        client.check_existing_assets(["device-id-1"])
+    except ImmichClientError as error:
+        assert "existingIds" in str(error)
+    else:
+        raise AssertionError("Expected ImmichClientError")

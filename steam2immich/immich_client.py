@@ -79,6 +79,32 @@ class ImmichClient:
 
         return str(asset_id)
 
+    def check_existing_assets(self, device_asset_ids: list[str]) -> set[str]:
+        """Return the device asset IDs Immich already has for this device."""
+
+        try:
+            response = self.session.post(
+                self._url("/assets/exist"),
+                json={
+                    "deviceAssetIds": device_asset_ids,
+                    "deviceId": DEVICE_ID,
+                },
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise ImmichClientError(
+                f"Immich check existing assets request failed: {error}"
+            ) from error
+
+        payload = self._json_response(response, "check existing assets")
+        existing_ids = payload.get("existingIds")
+        if not isinstance(existing_ids, list):
+            raise ImmichClientError(
+                f"Check existing assets response did not include existingIds: {payload}"
+            )
+
+        return {str(device_asset_id) for device_asset_id in existing_ids}
+
     def get_or_create_album(self, name: str) -> str:
         """Return an existing album ID by name, or create the album."""
 
