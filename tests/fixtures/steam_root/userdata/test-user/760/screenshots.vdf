@@ -1,0 +1,30 @@
+"screenshots"
+{
+    "1086940"
+    {
+        "0"
+        {
+            "type"        "1"
+            "filename"    "1086940/screenshots/20250101010101_1.jpg"
+            "thumbnail"   "1086940/screenshots/thumbnails/20250101010101_1.jpg"
+            "creation"    "1735689661"
+            "caption"     "A dummy Steam screenshot"
+            "gameid"      "1086940"
+        }
+    }
+    "999999"
+    {
+        "0"
+        {
+            "type"        "1"
+            "filename"    "999999/screenshots/20250102020202_1.png"
+            "creation"    "1735779722"
+            "description" "A fallback screenshot"
+            "gameid"      "999999"
+        }
+    }
+    "shortcutnames"
+    {
+        "999999" "Fixture Shortcut"
+    }
+}

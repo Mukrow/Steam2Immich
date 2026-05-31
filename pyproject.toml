@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=82"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "steam2immich"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local Python tool for importing Steam screenshots into Immich."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,6 +23,7 @@ include = ["steam2immich*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--basetemp=.pytest-tmp", "-p", "no:cacheprovider"]
 norecursedirs = [
     ".git",
     ".pytest_cache",
