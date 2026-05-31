@@ -25,10 +25,16 @@ to albums, and applies searchable Immich tags. Originals are never modified.
 - Python 3.12+
 - An Immich API key
 
-Install dependencies:
+Install for local CLI usage:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
+```
+
+For development and testing:
+
+```bash
+pip install -r requirements-dev.txt
 ```
 
 ## Configuration
@@ -76,25 +82,31 @@ Required Immich API key permissions:
 Dry-run the full library:
 
 ```bash
-python -m steam2immich.main --dry-run --log-level INFO
+steam2immich --dry-run --log-level INFO
 ```
 
 Preview one game and one screenshot:
 
 ```bash
-python -m steam2immich.main --dry-run --log-level INFO --app-id 1086940 --limit 1
+steam2immich --dry-run --log-level INFO --app-id 1086940 --limit 1
 ```
 
 Upload one screenshot as a first real test:
 
 ```bash
-python -m steam2immich.main --log-level INFO --app-id 1086940 --limit 1
+steam2immich --log-level INFO --app-id 1086940 --limit 1
 ```
 
 Upload everything:
 
 ```bash
-python -m steam2immich.main --log-level INFO
+steam2immich --log-level INFO
+```
+
+The module entrypoint also remains available:
+
+```bash
+python -m steam2immich.main --dry-run --log-level INFO
 ```
 
 Supported CLI arguments:

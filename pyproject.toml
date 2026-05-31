@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steam2immich"
+version = "0.1.0"
+description = "Local Python tool for importing Steam screenshots into Immich."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests",
+    "python-dotenv",
+    "Pillow",
+    "vdf",
+]
+
+[project.scripts]
+steam2immich = "steam2immich.main:main"
+
+[tool.setuptools.packages.find]
+include = ["steam2immich*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".git",
+    ".pytest_cache",
+    ".venv",
+    "venv",
+    "workdir",
+]
