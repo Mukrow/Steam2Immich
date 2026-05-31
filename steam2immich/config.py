@@ -73,7 +73,7 @@ def load_config(cli_args: argparse.Namespace | None = None) -> Config:
                 cli_args,
                 "app_names_overrides",
                 "APP_NAMES_OVERRIDES",
-                "workdir/app_names_overrides.json",
+                "app_names_overrides.json",
             )
         ).expanduser(),
         dry_run=_get_bool(cli_args, "dry_run", "DRY_RUN", False),

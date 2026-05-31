@@ -50,7 +50,7 @@ STEAM2IMMICH_UNCOMPRESSED_DIR=
 STEAM2IMMICH_IMMICH_BASE_URL=
 STEAM2IMMICH_IMMICH_API_KEY=
 STEAM2IMMICH_OUTPUT_DIR=workdir
-STEAM2IMMICH_APP_NAMES_OVERRIDES=workdir/app_names_overrides.json
+STEAM2IMMICH_APP_NAMES_OVERRIDES=app_names_overrides.json
 STEAM2IMMICH_DRY_RUN=true
 STEAM2IMMICH_ALBUM_MODE=single
 STEAM2IMMICH_SINGLE_ALBUM_NAME=Steam Screenshots
@@ -129,7 +129,7 @@ The disk scan is the source of truth for files that currently exist. Steam's
 
 Game names are resolved in this order:
 
-1. manual overrides from `workdir/app_names_overrides.json`
+1. manual overrides from `app_names_overrides.json`
 2. local Steam shortcut names from `screenshots.vdf`
 3. local `appmanifest_<appid>.acf` files from all Steam library folders
 4. cached remote Steam Store lookups in `workdir/app_names_cache.json`
@@ -215,4 +215,6 @@ steam2immich/
   immich_client.py Immich upload, album, and tag API client
   upload_state.py local upload idempotency state
 workdir/        generated runtime output, ignored except .gitkeep
+app_names_overrides.json
+                repo-owned app name overrides
 ```

@@ -17,3 +17,6 @@ venv/
 # Generated application output
 workdir/*
 !workdir/.gitkeep
+
+# Repo-owned local app naming configuration
+!app_names_overrides.json
