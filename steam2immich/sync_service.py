@@ -30,12 +30,18 @@ def run_sync(config: Config) -> int:
         )
         return 2
 
+    immich_client = None
+    if not config.dry_run:
+        immich_client = _build_verified_immich_client(config)
+        if immich_client is None:
+            return 2
+
     candidates, summary = _discover_candidates(config)
 
     if config.dry_run:
         _run_dry_run(candidates, config)
     else:
-        upload_exit_code = _run_uploads(candidates, config, summary)
+        upload_exit_code = _run_uploads(candidates, config, summary, immich_client)
         if upload_exit_code != 0:
             return upload_exit_code
 
@@ -125,41 +131,23 @@ def _run_dry_run(candidates: list[ScreenshotCandidate], config: Config) -> None:
 
 
 def _run_uploads(
-    candidates: list[ScreenshotCandidate], config: Config, summary: SyncSummary
+    candidates: list[ScreenshotCandidate],
+    config: Config,
+    summary: SyncSummary,
+    immich_client: ImmichClient,
 ) -> int:
     """Upload all candidates to Immich and update the shared sync summary."""
-
-    if not config.immich_base_url or not config.immich_api_key:
-        logger.error(
-            "Immich base URL and API key are required for non-dry-run uploads. "
-            "Set STEAM2IMMICH_IMMICH_BASE_URL and STEAM2IMMICH_IMMICH_API_KEY."
-        )
-        return 2
-
-    try:
-        immich_client = ImmichClient(config.immich_base_url, config.immich_api_key)
-    except ImmichClientError as error:
-        logger.error("Could not initialize Immich client: %s", error)
-        return 2
 
     upload_state = UploadState(config.output_dir / "upload_state.json")
     candidate_asset_ids = [
         (candidate, build_device_asset_id(candidate)) for candidate in candidates
     ]
-    try:
-        server_existing_ids = immich_client.check_existing_assets(
-            [device_asset_id for _, device_asset_id in candidate_asset_ids]
-        )
-    except ImmichClientError as error:
-        logger.error("Could not check existing Immich assets: %s", error)
-        return 2
 
     logger.info("Preparing upload copies under %s", config.output_dir / "prepared")
     for candidate, device_asset_id in candidate_asset_ids:
         _upload_candidate(
             candidate,
             device_asset_id,
-            server_existing_ids,
             config,
             summary,
             immich_client,
@@ -172,7 +160,6 @@ def _run_uploads(
 def _upload_candidate(
     candidate: ScreenshotCandidate,
     device_asset_id: str,
-    server_existing_ids: set[str],
     config: Config,
     summary: SyncSummary,
     immich_client: ImmichClient,
@@ -189,15 +176,6 @@ def _upload_candidate(
         )
         return
 
-    if device_asset_id in server_existing_ids:
-        summary.skipped += 1
-        logger.info(
-            "Skipping Immich-existing asset device_asset_id=%s path=%s",
-            device_asset_id,
-            candidate.chosen_path,
-        )
-        return
-
     try:
         prepared_asset = prepare_upload_copy(candidate, config.output_dir)
         logger.debug(
@@ -207,7 +185,8 @@ def _upload_candidate(
             prepared_asset.prepared_path,
         )
 
-        asset_id = immich_client.upload_asset(prepared_asset, device_asset_id)
+        upload_result = immich_client.upload_asset(prepared_asset, device_asset_id)
+        asset_id = upload_result.asset_id
         upload_state.record(device_asset_id, asset_id, prepared_asset)
         upload_state.save()
 
@@ -220,16 +199,45 @@ def _upload_candidate(
         _add_to_album(immich_client, upload_state, device_asset_id, asset_id, album_name)
         _add_tags(immich_client, upload_state, device_asset_id, asset_id, candidate)
 
-        summary.uploaded += 1
-        logger.info(
-            "Uploaded asset app_id=%s album=%s asset_id=%s",
-            candidate.app_id,
-            album_name,
-            asset_id,
-        )
+        if upload_result.duplicate:
+            summary.skipped += 1
+            logger.info(
+                "Immich reported duplicate asset app_id=%s album=%s asset_id=%s",
+                candidate.app_id,
+                album_name,
+                asset_id,
+            )
+        else:
+            summary.uploaded += 1
+            logger.info(
+                "Uploaded asset app_id=%s album=%s asset_id=%s",
+                candidate.app_id,
+                album_name,
+                asset_id,
+            )
     except (OSError, ImmichClientError) as error:
         summary.failed += 1
         logger.warning("Could not upload %s: %s", candidate.chosen_path, error)
+
+
+def _build_verified_immich_client(config: Config) -> ImmichClient | None:
+    """Create an Immich client and verify the server is supported."""
+
+    if not config.immich_base_url or not config.immich_api_key:
+        logger.error(
+            "Immich base URL and API key are required for non-dry-run uploads. "
+            "Set STEAM2IMMICH_IMMICH_BASE_URL and STEAM2IMMICH_IMMICH_API_KEY."
+        )
+        return None
+
+    try:
+        immich_client = ImmichClient(config.immich_base_url, config.immich_api_key)
+        immich_client.require_v3()
+    except ImmichClientError as error:
+        logger.error("Could not verify Immich v3 server: %s", error)
+        return None
+
+    return immich_client
 
 
 def _add_to_album(

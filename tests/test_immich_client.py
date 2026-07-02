@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import pytest
 from conftest import FakeResponse, FakeSession
 
 from steam2immich.immich_client import (
@@ -9,6 +10,7 @@ from steam2immich.immich_client import (
     build_device_asset_id,
     tag_names_for_candidate,
 )
+from steam2immich.models import PreparedAsset
 
 
 def _client_with_session(session: FakeSession) -> ImmichClient:
@@ -63,43 +65,114 @@ def test_get_or_create_tag_creates_missing_tag() -> None:
     assert [call[0] for call in session.calls] == ["get", "post"]
 
 
-def test_check_existing_assets_posts_device_asset_ids() -> None:
-    # Existing-asset checks should ask Immich which local device asset IDs it already has.
+def test_require_v3_accepts_major_version() -> None:
+    # Version validation should allow Immich v3 before upload orchestration begins.
     session = FakeSession(
         {
-            "get": [],
-            "post": [FakeResponse({"existingIds": ["device-id-1"]})],
+            "get": [FakeResponse({"major": 3, "minor": 0, "patch": 0})],
+            "post": [],
             "put": [],
         }
     )
     client = _client_with_session(session)
 
-    existing_ids = client.check_existing_assets(["device-id-1", "device-id-2"])
+    client.require_v3()
 
-    assert existing_ids == {"device-id-1"}
+    assert session.calls == [
+        ("get", "https://immich.example/api/server/version", {"timeout": 5})
+    ]
+
+
+def test_require_v3_accepts_version_string() -> None:
+    # Version validation should tolerate alternate version response shapes.
+    session = FakeSession(
+        {"get": [FakeResponse({"version": "v3.0.0"})], "post": [], "put": []}
+    )
+    client = _client_with_session(session)
+
+    client.require_v3()
+
+
+def test_require_v3_rejects_v2() -> None:
+    # Older Immich servers should fail before any upload work is attempted.
+    session = FakeSession({"get": [FakeResponse({"major": 2})], "post": [], "put": []})
+    client = _client_with_session(session)
+
+    with pytest.raises(ImmichClientError, match="requires Immich v3"):
+        client.require_v3()
+
+
+def test_require_v3_rejects_malformed_payload() -> None:
+    # Unknown version shapes should fail closed.
+    session = FakeSession(
+        {"get": [FakeResponse({"server": "immich"})], "post": [], "put": []}
+    )
+    client = _client_with_session(session)
+
+    with pytest.raises(ImmichClientError, match="requires Immich v3"):
+        client.require_v3()
+
+
+def test_require_v3_rejects_http_error() -> None:
+    # Version endpoint failures should stop the sync early.
+    session = FakeSession(
+        {
+            "get": [FakeResponse({}, status_code=500, text="boom")],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    with pytest.raises(ImmichClientError, match="HTTP 500"):
+        client.require_v3()
+
+
+def test_upload_asset_uses_v3_payload(tmp_path, candidate_factory) -> None:
+    # Immich v3 upload requests must not include removed device identity fields.
+    candidate = candidate_factory(timestamp=datetime(2025, 1, 1, 1, 1, 1))
+    prepared_path = tmp_path / "prepared.png"
+    prepared_path.write_bytes(b"image")
+    prepared_asset = PreparedAsset(candidate, prepared_path, True)
+    session = FakeSession(
+        {
+            "get": [],
+            "post": [FakeResponse({"id": "asset-id", "status": "created"})],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    result = client.upload_asset(prepared_asset, "legacy-device-asset-id")
+
+    assert result.asset_id == "asset-id"
+    assert result.duplicate is False
     method, url, kwargs = session.calls[0]
     assert method == "post"
-    assert url == "https://immich.example/api/assets/exist"
-    assert kwargs["json"] == {
-        "deviceAssetIds": ["device-id-1", "device-id-2"],
-        "deviceId": "steam2immich",
-    }
+    assert url == "https://immich.example/api/assets"
+    assert kwargs["data"]["filename"] == "prepared.png"
+    assert "fileCreatedAt" in kwargs["data"]
+    assert "fileModifiedAt" in kwargs["data"]
+    assert "deviceId" not in kwargs["data"]
+    assert "deviceAssetId" not in kwargs["data"]
 
 
-def test_check_existing_assets_rejects_invalid_payload() -> None:
-    # Existing-asset responses must include an existingIds list.
+def test_upload_asset_marks_duplicate(tmp_path, candidate_factory) -> None:
+    # Immich v3 reports duplicates from the upload response.
+    candidate = candidate_factory()
+    prepared_path = tmp_path / "prepared.png"
+    prepared_path.write_bytes(b"image")
+    prepared_asset = PreparedAsset(candidate, prepared_path, True)
     session = FakeSession(
         {
             "get": [],
-            "post": [FakeResponse({"existingIds": "device-id-1"})],
+            "post": [FakeResponse({"id": "asset-id", "status": "duplicate"})],
             "put": [],
         }
     )
     client = _client_with_session(session)
 
-    try:
-        client.check_existing_assets(["device-id-1"])
-    except ImmichClientError as error:
-        assert "existingIds" in str(error)
-    else:
-        raise AssertionError("Expected ImmichClientError")
+    result = client.upload_asset(prepared_asset, "legacy-device-asset-id")
+
+    assert result.asset_id == "asset-id"
+    assert result.duplicate is True
