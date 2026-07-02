@@ -23,6 +23,7 @@ to albums, and applies searchable Immich tags. Originals are never modified.
 ## Requirements
 
 - Python 3.12+
+- Immich v3
 - An Immich API key
 
 Install for local CLI usage:
@@ -66,6 +67,8 @@ STEAM2IMMICH_LOG_LEVEL=INFO
 
 `STEAM2IMMICH_STEAM_USER_ID` is required. Non-dry-run uploads also require
 `STEAM2IMMICH_IMMICH_BASE_URL` and `STEAM2IMMICH_IMMICH_API_KEY`.
+Non-dry-run uploads verify the Immich server version before discovery and stop
+early unless the server reports Immich v3.
 
 Required Immich API key permissions:
 

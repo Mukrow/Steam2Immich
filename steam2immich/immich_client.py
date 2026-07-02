@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,14 @@ logger = logging.getLogger("steam2immich.immich_client")
 
 DEVICE_ID = "steam2immich"
 REQUEST_TIMEOUT_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class UploadResult:
+    """Result returned by Immich after an asset upload."""
+
+    asset_id: str
+    duplicate: bool = False
 
 
 class ImmichClient:
@@ -48,14 +57,30 @@ class ImmichClient:
         self._album_cache: dict[str, str] = {}
         self._tag_cache: dict[str, str] = {}
 
-    def upload_asset(self, prepared_asset: PreparedAsset, device_asset_id: str) -> str:
-        """Upload one prepared asset and return the Immich asset ID."""
+    def require_v3(self) -> None:
+        """Verify the connected Immich server is running v3."""
+
+        try:
+            response = self.session.get(self._url("/server/version"), timeout=self.timeout)
+        except requests.RequestException as error:
+            raise ImmichClientError(f"Immich server version request failed: {error}") from error
+
+        payload = self._json_response(response, "server version")
+        if not isinstance(payload, dict):
+            raise ImmichClientError(f"Server version response was not an object: {payload}")
+
+        major = _major_version(payload)
+        if major != 3:
+            raise ImmichClientError(
+                f"Unsupported Immich server version {payload}; steam2immich requires Immich v3"
+            )
+
+    def upload_asset(self, prepared_asset: PreparedAsset, device_asset_id: str) -> UploadResult:
+        """Upload one prepared asset and return the Immich upload result."""
 
         path = prepared_asset.prepared_path
         candidate = prepared_asset.candidate
         data = {
-            "deviceAssetId": device_asset_id,
-            "deviceId": DEVICE_ID,
             "fileCreatedAt": _file_created_at(path, candidate),
             "fileModifiedAt": _file_modified_at(path),
             "filename": path.name,
@@ -77,33 +102,10 @@ class ImmichClient:
         if not asset_id:
             raise ImmichClientError(f"Upload response did not include an asset id: {payload}")
 
-        return str(asset_id)
-
-    def check_existing_assets(self, device_asset_ids: list[str]) -> set[str]:
-        """Return the device asset IDs Immich already has for this device."""
-
-        try:
-            response = self.session.post(
-                self._url("/assets/exist"),
-                json={
-                    "deviceAssetIds": device_asset_ids,
-                    "deviceId": DEVICE_ID,
-                },
-                timeout=self.timeout,
-            )
-        except requests.RequestException as error:
-            raise ImmichClientError(
-                f"Immich check existing assets request failed: {error}"
-            ) from error
-
-        payload = self._json_response(response, "check existing assets")
-        existing_ids = payload.get("existingIds")
-        if not isinstance(existing_ids, list):
-            raise ImmichClientError(
-                f"Check existing assets response did not include existingIds: {payload}"
-            )
-
-        return {str(device_asset_id) for device_asset_id in existing_ids}
+        return UploadResult(
+            asset_id=str(asset_id),
+            duplicate=payload.get("status") == "duplicate",
+        )
 
     def get_or_create_album(self, name: str) -> str:
         """Return an existing album ID by name, or create the album."""
@@ -281,6 +283,25 @@ def _normalize_base_url(base_url: str) -> str:
     if normalized.endswith("/api"):
         return normalized
     return f"{normalized}/api"
+
+
+def _major_version(payload: dict[str, Any]) -> int | None:
+    """Extract Immich's major version from known version response shapes."""
+
+    major = payload.get("major")
+    if isinstance(major, int):
+        return major
+    if isinstance(major, str) and major.isdigit():
+        return int(major)
+
+    version = payload.get("version")
+    if isinstance(version, str):
+        normalized = version.lstrip("v")
+        first_part = normalized.split(".", 1)[0]
+        if first_part.isdigit():
+            return int(first_part)
+
+    return None
 
 
 def _file_created_at(path: Path, candidate: ScreenshotCandidate) -> str:
