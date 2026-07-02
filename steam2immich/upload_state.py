@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import PreparedAsset
+from .models import ScreenshotCandidate
 
 
 logger = logging.getLogger("steam2immich.upload_state")
@@ -25,14 +25,13 @@ class UploadState:
         return device_asset_id in self.records
 
     def record(
-        self, device_asset_id: str, asset_id: str, prepared_asset: PreparedAsset
+        self, device_asset_id: str, asset_id: str, candidate: ScreenshotCandidate
     ) -> None:
         """Store one successful upload in local state."""
 
         self.records[device_asset_id] = {
             "asset_id": asset_id,
-            "chosen_path": str(prepared_asset.candidate.chosen_path),
-            "prepared_path": str(prepared_asset.prepared_path),
+            "chosen_path": str(candidate.chosen_path),
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
             "album_added": False,
             "tags_added": False,

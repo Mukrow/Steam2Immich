@@ -27,13 +27,6 @@ class ScreenshotCandidate:
 
 
 @dataclass
-class PreparedAsset:
-    candidate: ScreenshotCandidate
-    prepared_path: Path
-    metadata_written: bool
-
-
-@dataclass
 class SyncSummary:
     found: int = 0
     using_uncompressed: int = 0

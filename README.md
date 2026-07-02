@@ -3,8 +3,9 @@
 Local Python tool for importing Steam screenshots into Immich.
 
 steam2immich discovers Steam screenshots, prefers uncompressed copies when
-available, enriches them with Steam metadata, uploads them to Immich, adds them
-to albums, and applies searchable Immich tags. Originals are never modified.
+available, uploads the selected original files to Immich, adds them to albums,
+and applies searchable Immich tags. Originals are opened read-only and never
+modified.
 
 ## Features
 
@@ -13,9 +14,7 @@ to albums, and applies searchable Immich tags. Originals are never modified.
 - parses Steam `screenshots.vdf` for timestamps and metadata
 - resolves game names from Steam manifests, cache, remote lookup, and manual overrides
 - supports single-album and per-game album modes
-- prepares upload copies under `workdir/prepared/`
-- writes best-effort metadata only to prepared copies
-- uploads prepared copies to Immich
+- uploads selected original files directly to Immich
 - applies Immich tags: `Steam`, `Steam/<game name>`, `Steam App/<app_id>`
 - keeps local upload history in `workdir/upload_state.json` to skip reruns
 - writes dry-run CSV reports under `workdir/reports/`
@@ -171,21 +170,14 @@ If multiple uncompressed matches exist, the largest file is selected.
 
 ## Safety
 
-Dry run performs no uploads, no metadata writes, and no file copies. It writes a
-CSV report under:
+Dry run performs no uploads and no file copies. It writes a CSV report under:
 
 ```text
 workdir/reports/
 ```
 
-Non-dry-run mode copies chosen files to:
-
-```text
-workdir/prepared/<app_id>/
-```
-
-Metadata is written only to prepared copies. Steam originals and uncompressed
-originals are never modified.
+Non-dry-run mode uploads the selected original file directly to Immich. Files are
+opened read-only and are not copied or modified.
 
 Local upload history is stored in:
 
@@ -210,7 +202,6 @@ Use `--log-level DEBUG` to see each candidate and chosen path.
 
 - duplicate checks are local-state only; server-side duplicate search is not implemented
 - album/tag follow-up retries are not implemented if upload succeeds but follow-up assignment fails
-- metadata writing is best-effort and may not surface in Immich for every format
 
 ## Project Structure
 
@@ -226,7 +217,6 @@ steam2immich/
   vdf_parser.py Steam screenshots.vdf metadata parsing
   steam_apps.py Steam app name resolution
   report_writer.py dry-run CSV report writing
-  metadata_writer.py upload-copy preparation and metadata writing
   immich_client.py Immich upload, album, and tag API client
   upload_state.py local upload idempotency state
 workdir/        generated runtime output, ignored except .gitkeep

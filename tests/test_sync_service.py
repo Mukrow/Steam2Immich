@@ -3,7 +3,7 @@ from pathlib import Path
 from steam2immich import sync_service
 from steam2immich.config import Config
 from steam2immich.immich_client import ImmichClientError, UploadResult, build_device_asset_id
-from steam2immich.models import PreparedAsset, SyncSummary
+from steam2immich.models import ScreenshotCandidate, SyncSummary
 from steam2immich.sync_service import _discover_candidates, _run_uploads, _upload_candidate, run_sync
 
 
@@ -119,7 +119,7 @@ def test_discover_candidates_applies_app_id_and_limit_filters(tmp_path, steam_ro
 class FakeUploadState:
     def __init__(self, local_ids: set[str] | None = None) -> None:
         self.local_ids = local_ids or set()
-        self.records: list[tuple[str, str, PreparedAsset]] = []
+        self.records: list[tuple[str, str, ScreenshotCandidate]] = []
         self.album_added: list[str] = []
         self.tags_added: list[str] = []
         self.save_count = 0
@@ -128,9 +128,9 @@ class FakeUploadState:
         return device_asset_id in self.local_ids
 
     def record(
-        self, device_asset_id: str, asset_id: str, prepared_asset: PreparedAsset
+        self, device_asset_id: str, asset_id: str, candidate: ScreenshotCandidate
     ) -> None:
-        self.records.append((device_asset_id, asset_id, prepared_asset))
+        self.records.append((device_asset_id, asset_id, candidate))
 
     def save(self) -> None:
         self.save_count += 1
@@ -151,7 +151,7 @@ class FakeImmichClient:
         self.upload_results = upload_results or []
         self.version_error = version_error
         self.version_checked = False
-        self.uploaded_assets: list[PreparedAsset] = []
+        self.uploaded_candidates: list[ScreenshotCandidate] = []
 
     def require_v3(self) -> None:
         self.version_checked = True
@@ -159,12 +159,12 @@ class FakeImmichClient:
             raise self.version_error
 
     def upload_asset(
-        self, prepared_asset: PreparedAsset, device_asset_id: str
+        self, candidate: ScreenshotCandidate, device_asset_id: str
     ) -> UploadResult:
-        self.uploaded_assets.append(prepared_asset)
+        self.uploaded_candidates.append(candidate)
         if self.upload_results:
             return self.upload_results.pop(0)
-        return UploadResult(f"asset-{len(self.uploaded_assets)}")
+        return UploadResult(f"asset-{len(self.uploaded_candidates)}")
 
     def get_or_create_album(self, name: str) -> str:
         return "album-id"
@@ -182,17 +182,12 @@ class FakeImmichClient:
 def test_upload_candidate_skips_locally_recorded_asset(
     tmp_path, steam_root, candidate_factory, monkeypatch
 ) -> None:
-    # Locally-recorded assets should skip before preparing or uploading the file.
+    # Locally-recorded assets should skip before uploading the file.
     candidate = candidate_factory()
     device_asset_id = build_device_asset_id(candidate)
     summary = SyncSummary()
     upload_state = FakeUploadState({device_asset_id})
     immich_client = FakeImmichClient()
-    monkeypatch.setattr(
-        sync_service,
-        "prepare_upload_copy",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("should not prepare")),
-    )
 
     _upload_candidate(
         candidate,
@@ -204,20 +199,18 @@ def test_upload_candidate_skips_locally_recorded_asset(
     )
 
     assert summary.skipped == 1
-    assert immich_client.uploaded_assets == []
+    assert immich_client.uploaded_candidates == []
 
 
 def test_upload_candidate_uploads_when_not_known_locally(
     tmp_path, steam_root, candidate_factory, monkeypatch
 ) -> None:
-    # New assets should still be prepared, uploaded, recorded, albumed, and tagged.
+    # New assets should upload from the selected source, record, album, and tag.
     candidate = candidate_factory()
     device_asset_id = build_device_asset_id(candidate)
-    prepared_asset = PreparedAsset(candidate, tmp_path / "prepared.png", True)
     summary = SyncSummary()
     upload_state = FakeUploadState()
     immich_client = FakeImmichClient()
-    monkeypatch.setattr(sync_service, "prepare_upload_copy", lambda *_args: prepared_asset)
 
     _upload_candidate(
         candidate,
@@ -229,10 +222,12 @@ def test_upload_candidate_uploads_when_not_known_locally(
     )
 
     assert summary.uploaded == 1
-    assert immich_client.uploaded_assets == [prepared_asset]
+    assert immich_client.uploaded_candidates == [candidate]
     assert upload_state.records[0][0] == device_asset_id
+    assert upload_state.records[0][2] == candidate
     assert upload_state.album_added == [device_asset_id]
     assert upload_state.tags_added == [device_asset_id]
+    assert not (tmp_path / "prepared").exists()
 
 
 def test_upload_candidate_records_duplicate_upload_as_skipped(
@@ -241,11 +236,9 @@ def test_upload_candidate_records_duplicate_upload_as_skipped(
     # Immich v3 reports duplicates from the upload response after receiving the asset.
     candidate = candidate_factory()
     device_asset_id = build_device_asset_id(candidate)
-    prepared_asset = PreparedAsset(candidate, tmp_path / "prepared.png", True)
     summary = SyncSummary()
     upload_state = FakeUploadState()
     immich_client = FakeImmichClient([UploadResult("asset-duplicate", duplicate=True)])
-    monkeypatch.setattr(sync_service, "prepare_upload_copy", lambda *_args: prepared_asset)
 
     _upload_candidate(
         candidate,
@@ -259,7 +252,7 @@ def test_upload_candidate_records_duplicate_upload_as_skipped(
     assert summary.uploaded == 0
     assert summary.skipped == 1
     assert summary.failed == 0
-    assert upload_state.records == [(device_asset_id, "asset-duplicate", prepared_asset)]
+    assert upload_state.records == [(device_asset_id, "asset-duplicate", candidate)]
     assert upload_state.album_added == [device_asset_id]
     assert upload_state.tags_added == [device_asset_id]
 
@@ -271,11 +264,6 @@ def test_run_uploads_does_not_check_server_existing_assets(
     candidate = candidate_factory()
     fake_client = FakeImmichClient()
     monkeypatch.setattr(sync_service, "UploadState", lambda *_args: FakeUploadState())
-    monkeypatch.setattr(
-        sync_service,
-        "prepare_upload_copy",
-        lambda candidate, _output_dir: PreparedAsset(candidate, tmp_path / "prepared.png", True),
-    )
 
     exit_code = _run_uploads(
         [candidate],
@@ -291,4 +279,4 @@ def test_run_uploads_does_not_check_server_existing_assets(
     )
 
     assert exit_code == 0
-    assert fake_client.uploaded_assets
+    assert fake_client.uploaded_candidates == [candidate]
