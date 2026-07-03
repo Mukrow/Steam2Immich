@@ -19,6 +19,7 @@ def _client_with_session(session: FakeSession) -> ImmichClient:
     client.session = session
     client._album_cache = {}
     client._tag_cache = {}
+    client._tag_cache_loaded = False
     return client
 
 
@@ -74,6 +75,45 @@ def test_get_tag_reuses_existing_tag_without_creating() -> None:
     assert client.get_tag("Steam") == "tag-id"
     assert client.get_tag("Steam") == "tag-id"
     assert [call[0] for call in session.calls] == ["get"]
+
+
+def test_get_tag_matches_hierarchical_tag_path() -> None:
+    # Immich may expose hierarchical tags through a full path field.
+    session = FakeSession(
+        {
+            "get": [FakeResponse([{"path": "Steam/Baldur's Gate 3", "name": "Baldur's Gate 3", "id": "tag-id"}])],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.get_tag("Steam/Baldur's Gate 3") == "tag-id"
+    assert [call[0] for call in session.calls] == ["get"]
+
+
+def test_create_tag_recovers_when_immich_reports_existing_tag() -> None:
+    # If a create races or lookup missed the response shape, refresh and reuse the existing tag.
+    session = FakeSession(
+        {
+            "get": [
+                FakeResponse([]),
+                FakeResponse([{"path": "Steam", "id": "tag-id"}]),
+            ],
+            "post": [
+                FakeResponse(
+                    {"message": "A tag with that name already exists"},
+                    status_code=400,
+                    text='{"message":"A tag with that name already exists"}',
+                )
+            ],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.get_or_create_tag("Steam") == "tag-id"
+    assert [call[0] for call in session.calls] == ["get", "post", "get"]
 
 
 def test_require_v3_accepts_major_version() -> None:

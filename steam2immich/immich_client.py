@@ -47,6 +47,7 @@ class ImmichClient:
         )
         self._album_cache: dict[str, str] = {}
         self._tag_cache: dict[str, str] = {}
+        self._tag_cache_loaded = False
 
     def require_v3(self) -> None:
         """Verify the connected Immich server is running v3."""
@@ -144,17 +145,14 @@ class ImmichClient:
     def get_tag(self, name: str) -> str | None:
         """Return an existing tag ID by name, if Immich already has it."""
 
-        if name in self._tag_cache:
-            return self._tag_cache[name]
+        normalized = _normalize_tag_name(name)
+        if normalized in self._tag_cache:
+            return self._tag_cache[normalized]
 
-        for tag in self._list_tags():
-            tag_name = tag.get("name") or tag.get("value")
-            tag_id = tag.get("id")
-            if tag_name == name and tag_id:
-                self._tag_cache[name] = str(tag_id)
-                return str(tag_id)
+        if not self._tag_cache_loaded:
+            self._refresh_tag_cache()
 
-        return None
+        return self._tag_cache.get(normalized)
 
     def create_tag(self, name: str) -> str:
         """Create a new Immich tag and return its ID."""
@@ -168,12 +166,21 @@ class ImmichClient:
         except requests.RequestException as error:
             raise ImmichClientError(f"Immich create tag request failed: {error}") from error
 
+        if _is_existing_tag_response(response):
+            self._refresh_tag_cache(force=True)
+            tag_id = self.get_tag(name)
+            if tag_id is not None:
+                return tag_id
+            raise ImmichClientError(
+                f"Immich reported tag {name!r} already exists, but it was not returned by list tags"
+            )
+
         payload = self._json_response(response, "create tag")
         tag_id = payload.get("id")
         if not tag_id:
             raise ImmichClientError(f"Create tag response did not include an id: {payload}")
 
-        self._tag_cache[name] = str(tag_id)
+        self._tag_cache[_normalize_tag_name(name)] = str(tag_id)
         return str(tag_id)
 
     def get_or_create_tag(self, name: str) -> str:
@@ -223,6 +230,25 @@ class ImmichClient:
         if not isinstance(payload, list):
             raise ImmichClientError(f"List tags response was not a list: {payload}")
         return [tag for tag in payload if isinstance(tag, dict)]
+
+    def _refresh_tag_cache(self, force: bool = False) -> None:
+        """Load Immich tags into the local name-to-ID cache."""
+
+        if self._tag_cache_loaded and not force:
+            return
+
+        if force:
+            self._tag_cache.clear()
+
+        for tag in self._list_tags():
+            tag_id = tag.get("id")
+            if not tag_id:
+                continue
+
+            for tag_name in _tag_name_candidates(tag):
+                self._tag_cache[_normalize_tag_name(tag_name)] = str(tag_id)
+
+        self._tag_cache_loaded = True
 
     def _url(self, path: str) -> str:
         """Build a full Immich API URL for an endpoint path."""
@@ -286,6 +312,47 @@ def _normalize_base_url(base_url: str) -> str:
     if normalized.endswith("/api"):
         return normalized
     return f"{normalized}/api"
+
+
+def _tag_name_candidates(tag: dict[str, Any]) -> list[str]:
+    """Return possible names for a tag from known Immich response shapes."""
+
+    candidates: list[str] = []
+    for key in ("path", "fullPath", "fullName", "name", "value"):
+        value = tag.get(key)
+        if isinstance(value, str) and value:
+            candidates.append(value)
+
+    parent = tag.get("parent")
+    tag_name = tag.get("name")
+    if isinstance(parent, dict) and isinstance(tag_name, str) and tag_name:
+        parent_names = _tag_name_candidates(parent)
+        candidates.extend(f"{parent_name}/{tag_name}" for parent_name in parent_names)
+
+    return candidates
+
+
+def _normalize_tag_name(name: str) -> str:
+    """Normalize tag names for exact cache lookup while preserving case."""
+
+    return "/".join(part.strip() for part in name.strip().split("/") if part.strip())
+
+
+def _is_existing_tag_response(response: requests.Response) -> bool:
+    if response.status_code != 400:
+        return False
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+
+    if isinstance(payload, dict):
+        message = payload.get("message", "")
+    else:
+        message = str(payload)
+
+    return "already exists" in str(message).lower()
 
 
 def _major_version(payload: dict[str, Any]) -> int | None:

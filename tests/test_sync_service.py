@@ -4,7 +4,13 @@ from steam2immich import sync_service
 from steam2immich.config import Config
 from steam2immich.immich_client import ImmichClientError, UploadResult, build_device_asset_id
 from steam2immich.models import ScreenshotCandidate, SyncSummary
-from steam2immich.sync_service import _discover_candidates, _run_uploads, _upload_candidate, run_sync
+from steam2immich.sync_service import (
+    _add_tags,
+    _discover_candidates,
+    _run_uploads,
+    _upload_candidate,
+    run_sync,
+)
 
 
 def _config(tmp_path, steam_root: Path, **overrides) -> Config:
@@ -153,6 +159,8 @@ class FakeImmichClient:
         self.version_checked = False
         self.uploaded_candidates: list[ScreenshotCandidate] = []
         self.tags: dict[str, str] = {}
+        self.created_tags: list[str] = []
+        self.tagged_assets: list[tuple[str, str]] = []
 
     def require_v3(self) -> None:
         self.version_checked = True
@@ -177,11 +185,12 @@ class FakeImmichClient:
         return self.tags.get(name)
 
     def create_tag(self, name: str) -> str:
+        self.created_tags.append(name)
         self.tags[name] = f"tag-{name}"
         return f"tag-{name}"
 
     def tag_asset(self, tag_id: str, asset_id: str) -> None:
-        return None
+        self.tagged_assets.append((tag_id, asset_id))
 
 
 def test_upload_candidate_skips_locally_recorded_asset(
@@ -259,6 +268,35 @@ def test_upload_candidate_records_duplicate_upload_as_skipped(
     assert summary.failed == 0
     assert upload_state.records == [(device_asset_id, "asset-duplicate", candidate)]
     assert upload_state.album_added == [device_asset_id]
+    assert upload_state.tags_added == [device_asset_id]
+
+
+def test_add_tags_reuses_existing_tags_without_creating(candidate_factory) -> None:
+    # Existing Immich tags should be applied without duplicate create attempts.
+    candidate = candidate_factory()
+    device_asset_id = build_device_asset_id(candidate)
+    upload_state = FakeUploadState()
+    immich_client = FakeImmichClient()
+    immich_client.tags = {
+        "Steam": "tag-steam",
+        "Steam/Baldur's Gate 3": "tag-game",
+        "Steam App/1086940": "tag-app",
+    }
+
+    _add_tags(
+        immich_client,
+        upload_state,
+        device_asset_id,
+        "asset-id",
+        candidate,
+    )
+
+    assert immich_client.created_tags == []
+    assert immich_client.tagged_assets == [
+        ("tag-steam", "asset-id"),
+        ("tag-game", "asset-id"),
+        ("tag-app", "asset-id"),
+    ]
     assert upload_state.tags_added == [device_asset_id]
 
 
