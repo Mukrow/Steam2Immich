@@ -9,7 +9,6 @@ from .immich_client import (
     tag_names_for_candidate,
 )
 from .matcher import build_screenshot_candidates
-from .metadata_writer import prepare_upload_copy
 from .models import ScreenshotCandidate, SyncSummary
 from .report_writer import write_dry_run_report
 from .scanner import extract_app_id_from_path, find_normal_screenshots
@@ -143,7 +142,7 @@ def _run_uploads(
         (candidate, build_device_asset_id(candidate)) for candidate in candidates
     ]
 
-    logger.info("Preparing upload copies under %s", config.output_dir / "prepared")
+    logger.info("Uploading selected source files to Immich.")
     for candidate, device_asset_id in candidate_asset_ids:
         _upload_candidate(
             candidate,
@@ -165,7 +164,7 @@ def _upload_candidate(
     immich_client: ImmichClient,
     upload_state: UploadState,
 ) -> None:
-    """Prepare and upload one candidate, including album and tag follow-ups."""
+    """Upload one candidate, including album and tag follow-ups."""
 
     if upload_state.has(device_asset_id):
         summary.skipped += 1
@@ -177,17 +176,15 @@ def _upload_candidate(
         return
 
     try:
-        prepared_asset = prepare_upload_copy(candidate, config.output_dir)
         logger.debug(
-            "Prepared asset app_id=%s metadata_written=%s path=%s",
+            "Uploading source asset app_id=%s path=%s",
             candidate.app_id,
-            prepared_asset.metadata_written,
-            prepared_asset.prepared_path,
+            candidate.chosen_path,
         )
 
-        upload_result = immich_client.upload_asset(prepared_asset, device_asset_id)
+        upload_result = immich_client.upload_asset(candidate, device_asset_id)
         asset_id = upload_result.asset_id
-        upload_state.record(device_asset_id, asset_id, prepared_asset)
+        upload_state.record(device_asset_id, asset_id, candidate)
         upload_state.save()
 
         album_name = album_name_for_candidate(
@@ -274,7 +271,9 @@ def _add_tags(
 
     try:
         for tag_name in tag_names_for_candidate(candidate):
-            tag_id = immich_client.get_or_create_tag(tag_name)
+            tag_id = immich_client.get_tag(tag_name)
+            if tag_id is None:
+                tag_id = immich_client.create_tag(tag_name)
             immich_client.tag_asset(tag_id, asset_id)
         upload_state.mark_tags_added(device_asset_id)
         upload_state.save()

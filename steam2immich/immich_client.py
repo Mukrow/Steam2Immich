@@ -4,17 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import requests
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-try:
-    import requests
-except ImportError:
-    requests = None
-
-from .models import PreparedAsset, ScreenshotCandidate
+from .models import ScreenshotCandidate
 
 
 logger = logging.getLogger("steam2immich.immich_client")
@@ -40,11 +36,6 @@ class ImmichClient:
         api_key: str,
         timeout: int = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
-        if requests is None:
-            raise ImmichClientError(
-                "requests is not installed; run `pip install -r requirements.txt` before uploading"
-            )
-
         self.base_url = _normalize_base_url(base_url)
         self.timeout = timeout
         self.session = requests.Session()
@@ -75,11 +66,10 @@ class ImmichClient:
                 f"Unsupported Immich server version {payload}; steam2immich requires Immich v3"
             )
 
-    def upload_asset(self, prepared_asset: PreparedAsset, device_asset_id: str) -> UploadResult:
-        """Upload one prepared asset and return the Immich upload result."""
+    def upload_asset(self, candidate: ScreenshotCandidate, device_asset_id: str) -> UploadResult:
+        """Upload one source asset read-only and return the Immich upload result."""
 
-        path = prepared_asset.prepared_path
-        candidate = prepared_asset.candidate
+        path = candidate.chosen_path
         data = {
             "fileCreatedAt": _file_created_at(path, candidate),
             "fileModifiedAt": _file_modified_at(path),
@@ -151,8 +141,8 @@ class ImmichClient:
 
         self._raise_for_status(response, "add asset to album")
 
-    def get_or_create_tag(self, name: str) -> str:
-        """Return an existing tag ID by name, or create the tag."""
+    def get_tag(self, name: str) -> str | None:
+        """Return an existing tag ID by name, if Immich already has it."""
 
         if name in self._tag_cache:
             return self._tag_cache[name]
@@ -163,6 +153,11 @@ class ImmichClient:
             if tag_name == name and tag_id:
                 self._tag_cache[name] = str(tag_id)
                 return str(tag_id)
+
+        return None
+
+    def create_tag(self, name: str) -> str:
+        """Create a new Immich tag and return its ID."""
 
         try:
             response = self.session.post(
@@ -180,6 +175,14 @@ class ImmichClient:
 
         self._tag_cache[name] = str(tag_id)
         return str(tag_id)
+
+    def get_or_create_tag(self, name: str) -> str:
+        """Return an existing tag ID by name, or create the tag."""
+
+        tag_id = self.get_tag(name)
+        if tag_id is not None:
+            return tag_id
+        return self.create_tag(name)
 
     def tag_asset(self, tag_id: str, asset_id: str) -> None:
         """Apply one tag to one uploaded asset."""
@@ -317,6 +320,6 @@ def _file_created_at(path: Path, candidate: ScreenshotCandidate) -> str:
 
 
 def _file_modified_at(path: Path) -> str:
-    """Return the prepared file modification time as an ISO timestamp."""
+    """Return the source file modification time as an ISO timestamp."""
 
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()

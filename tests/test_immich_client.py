@@ -10,7 +10,6 @@ from steam2immich.immich_client import (
     build_device_asset_id,
     tag_names_for_candidate,
 )
-from steam2immich.models import PreparedAsset
 
 
 def _client_with_session(session: FakeSession) -> ImmichClient:
@@ -63,6 +62,18 @@ def test_get_or_create_tag_creates_missing_tag() -> None:
     assert client.get_or_create_tag("Steam") == "tag-id"
     assert client.get_or_create_tag("Steam") == "tag-id"
     assert [call[0] for call in session.calls] == ["get", "post"]
+
+
+def test_get_tag_reuses_existing_tag_without_creating() -> None:
+    # Existing Immich tags should be reused without creating a duplicate.
+    session = FakeSession(
+        {"get": [FakeResponse([{"name": "Steam", "id": "tag-id"}])], "post": [], "put": []}
+    )
+    client = _client_with_session(session)
+
+    assert client.get_tag("Steam") == "tag-id"
+    assert client.get_tag("Steam") == "tag-id"
+    assert [call[0] for call in session.calls] == ["get"]
 
 
 def test_require_v3_accepts_major_version() -> None:
@@ -128,12 +139,9 @@ def test_require_v3_rejects_http_error() -> None:
         client.require_v3()
 
 
-def test_upload_asset_uses_v3_payload(tmp_path, candidate_factory) -> None:
-    # Immich v3 upload requests must not include removed device identity fields.
+def test_upload_asset_uses_original_source_read_only(candidate_factory) -> None:
+    # Uploads should read the chosen source file directly instead of a prepared copy.
     candidate = candidate_factory(timestamp=datetime(2025, 1, 1, 1, 1, 1))
-    prepared_path = tmp_path / "prepared.png"
-    prepared_path.write_bytes(b"image")
-    prepared_asset = PreparedAsset(candidate, prepared_path, True)
     session = FakeSession(
         {
             "get": [],
@@ -143,26 +151,27 @@ def test_upload_asset_uses_v3_payload(tmp_path, candidate_factory) -> None:
     )
     client = _client_with_session(session)
 
-    result = client.upload_asset(prepared_asset, "legacy-device-asset-id")
+    result = client.upload_asset(candidate, "legacy-device-asset-id")
 
     assert result.asset_id == "asset-id"
     assert result.duplicate is False
     method, url, kwargs = session.calls[0]
+    uploaded_name, uploaded_file = kwargs["files"]["assetData"]
     assert method == "post"
     assert url == "https://immich.example/api/assets"
-    assert kwargs["data"]["filename"] == "prepared.png"
+    assert kwargs["data"]["filename"] == candidate.chosen_path.name
     assert "fileCreatedAt" in kwargs["data"]
     assert "fileModifiedAt" in kwargs["data"]
     assert "deviceId" not in kwargs["data"]
     assert "deviceAssetId" not in kwargs["data"]
+    assert uploaded_name == candidate.chosen_path.name
+    assert uploaded_file.name == str(candidate.chosen_path)
+    assert uploaded_file.mode == "rb"
 
 
-def test_upload_asset_marks_duplicate(tmp_path, candidate_factory) -> None:
+def test_upload_asset_marks_duplicate(candidate_factory) -> None:
     # Immich v3 reports duplicates from the upload response.
     candidate = candidate_factory()
-    prepared_path = tmp_path / "prepared.png"
-    prepared_path.write_bytes(b"image")
-    prepared_asset = PreparedAsset(candidate, prepared_path, True)
     session = FakeSession(
         {
             "get": [],
@@ -172,7 +181,7 @@ def test_upload_asset_marks_duplicate(tmp_path, candidate_factory) -> None:
     )
     client = _client_with_session(session)
 
-    result = client.upload_asset(prepared_asset, "legacy-device-asset-id")
+    result = client.upload_asset(candidate, "legacy-device-asset-id")
 
     assert result.asset_id == "asset-id"
     assert result.duplicate is True

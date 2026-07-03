@@ -7,14 +7,10 @@ small remote Steam Store lookup only for app IDs that are missing locally.
 
 import json
 import logging
+import requests
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-try:
-    import requests
-except ImportError:
-    requests = None
 
 from .vdf_parser import load_vdf
 
@@ -172,10 +168,6 @@ def find_local_app_name(app_id: str, library_paths: list[Path]) -> str | None:
 
 def fetch_remote_app_name(app_id: str) -> str | None:
     """Fetch an app name from the public Steam Store appdetails endpoint."""
-
-    if requests is None:
-        logger.warning("requests is not installed; skipping remote Steam lookup for %s", app_id)
-        return None
 
     url = "https://store.steampowered.com/api/appdetails"
     try:
