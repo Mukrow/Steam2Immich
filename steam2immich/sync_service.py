@@ -271,7 +271,9 @@ def _add_tags(
 
     try:
         for tag_name in tag_names_for_candidate(candidate):
-            tag_id = immich_client.get_or_create_tag(tag_name)
+            tag_id = immich_client.get_tag(tag_name)
+            if tag_id is None:
+                tag_id = immich_client.create_tag(tag_name)
             immich_client.tag_asset(tag_id, asset_id)
         upload_state.mark_tags_added(device_asset_id)
         upload_state.save()

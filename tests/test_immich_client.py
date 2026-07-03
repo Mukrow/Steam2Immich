@@ -64,6 +64,18 @@ def test_get_or_create_tag_creates_missing_tag() -> None:
     assert [call[0] for call in session.calls] == ["get", "post"]
 
 
+def test_get_tag_reuses_existing_tag_without_creating() -> None:
+    # Existing Immich tags should be reused without creating a duplicate.
+    session = FakeSession(
+        {"get": [FakeResponse([{"name": "Steam", "id": "tag-id"}])], "post": [], "put": []}
+    )
+    client = _client_with_session(session)
+
+    assert client.get_tag("Steam") == "tag-id"
+    assert client.get_tag("Steam") == "tag-id"
+    assert [call[0] for call in session.calls] == ["get"]
+
+
 def test_require_v3_accepts_major_version() -> None:
     # Version validation should allow Immich v3 before upload orchestration begins.
     session = FakeSession(

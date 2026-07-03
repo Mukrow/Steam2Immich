@@ -152,6 +152,7 @@ class FakeImmichClient:
         self.version_error = version_error
         self.version_checked = False
         self.uploaded_candidates: list[ScreenshotCandidate] = []
+        self.tags: dict[str, str] = {}
 
     def require_v3(self) -> None:
         self.version_checked = True
@@ -172,7 +173,11 @@ class FakeImmichClient:
     def add_asset_to_album(self, album_id: str, asset_id: str) -> None:
         return None
 
-    def get_or_create_tag(self, name: str) -> str:
+    def get_tag(self, name: str) -> str | None:
+        return self.tags.get(name)
+
+    def create_tag(self, name: str) -> str:
+        self.tags[name] = f"tag-{name}"
         return f"tag-{name}"
 
     def tag_asset(self, tag_id: str, asset_id: str) -> None:

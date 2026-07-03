@@ -141,8 +141,8 @@ class ImmichClient:
 
         self._raise_for_status(response, "add asset to album")
 
-    def get_or_create_tag(self, name: str) -> str:
-        """Return an existing tag ID by name, or create the tag."""
+    def get_tag(self, name: str) -> str | None:
+        """Return an existing tag ID by name, if Immich already has it."""
 
         if name in self._tag_cache:
             return self._tag_cache[name]
@@ -153,6 +153,11 @@ class ImmichClient:
             if tag_name == name and tag_id:
                 self._tag_cache[name] = str(tag_id)
                 return str(tag_id)
+
+        return None
+
+    def create_tag(self, name: str) -> str:
+        """Create a new Immich tag and return its ID."""
 
         try:
             response = self.session.post(
@@ -170,6 +175,14 @@ class ImmichClient:
 
         self._tag_cache[name] = str(tag_id)
         return str(tag_id)
+
+    def get_or_create_tag(self, name: str) -> str:
+        """Return an existing tag ID by name, or create the tag."""
+
+        tag_id = self.get_tag(name)
+        if tag_id is not None:
+            return tag_id
+        return self.create_tag(name)
 
     def tag_asset(self, tag_id: str, asset_id: str) -> None:
         """Apply one tag to one uploaded asset."""
