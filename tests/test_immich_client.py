@@ -65,6 +65,87 @@ def test_get_or_create_tag_creates_missing_tag() -> None:
     assert [call[0] for call in session.calls] == ["get", "post"]
 
 
+def test_get_asset_returns_asset_payload() -> None:
+    session = FakeSession(
+        {
+            "get": [FakeResponse({"id": "asset-id", "tags": []})],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.get_asset("asset-id") == {"id": "asset-id", "tags": []}
+    assert session.calls == [
+        ("get", "https://immich.example/api/assets/asset-id", {"timeout": 5})
+    ]
+
+
+def test_get_asset_returns_none_for_missing_asset() -> None:
+    session = FakeSession(
+        {
+            "get": [FakeResponse({"message": "not found"}, status_code=404)],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.get_asset("asset-id") is None
+
+
+def test_get_asset_returns_none_for_immich_missing_asset_400() -> None:
+    session = FakeSession(
+        {
+            "get": [
+                FakeResponse(
+                    {"message": "Not found or no asset.read access"},
+                    status_code=400,
+                    text='{"message":"Not found or no asset.read access"}',
+                )
+            ],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.get_asset("asset-id") is None
+
+
+def test_album_contains_asset_checks_album_detail_membership() -> None:
+    session = FakeSession(
+        {
+            "get": [
+                FakeResponse([{"albumName": "Steam", "id": "album-id"}]),
+                FakeResponse({"assets": [{"id": "asset-id"}]}),
+            ],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.album_contains_asset("Steam", "asset-id") is True
+    assert [call[1] for call in session.calls] == [
+        "https://immich.example/api/albums",
+        "https://immich.example/api/albums/album-id",
+    ]
+
+
+def test_asset_has_tags_matches_hierarchical_tag_paths() -> None:
+    client = _client_with_session(FakeSession({"get": [], "post": [], "put": []}))
+    asset = {
+        "tags": [
+            {"path": "Steam"},
+            {"path": "Steam/Baldur's Gate 3"},
+        ]
+    }
+
+    assert client.asset_has_tags(asset, ["Steam", "Steam/Baldur's Gate 3"]) is True
+    assert client.asset_has_tags(asset, ["Steam", "Steam App/1086940"]) is False
+
+
 def test_get_tag_reuses_existing_tag_without_creating() -> None:
     # Existing Immich tags should be reused without creating a duplicate.
     session = FakeSession(

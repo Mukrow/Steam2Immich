@@ -30,6 +30,7 @@ def _config(tmp_path, steam_root: Path, **overrides) -> Config:
         "log_level": "INFO",
         "limit": None,
         "app_id_filter": None,
+        "audit_state": False,
     }
     values.update(overrides)
     return Config(**values)
@@ -110,6 +111,36 @@ def test_run_sync_returns_error_for_non_v3_immich(
 
     assert run_sync(config) == 2
     assert fake_client.version_checked is True
+
+
+def test_run_sync_audits_state_before_discovery(tmp_path, steam_root, monkeypatch) -> None:
+    fake_client = FakeImmichClient()
+    calls: list[str] = []
+    monkeypatch.setattr(sync_service, "ImmichClient", lambda *_args: fake_client)
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: "upload-state")
+    monkeypatch.setattr(
+        sync_service,
+        "audit_upload_state",
+        lambda *_args: calls.append("audit"),
+    )
+
+    def fake_discover(*_args):
+        calls.append("discover")
+        return [], SyncSummary()
+
+    monkeypatch.setattr(sync_service, "_discover_candidates", fake_discover)
+
+    config = _config(
+        tmp_path,
+        steam_root,
+        dry_run=False,
+        immich_base_url="https://immich.example",
+        immich_api_key="key",
+        audit_state=True,
+    )
+
+    assert run_sync(config) == 0
+    assert calls == ["audit", "discover"]
 
 
 def test_discover_candidates_applies_app_id_and_limit_filters(tmp_path, steam_root) -> None:

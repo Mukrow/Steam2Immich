@@ -12,6 +12,7 @@ from .matcher import build_screenshot_candidates
 from .models import ScreenshotCandidate, SyncSummary
 from .report_writer import write_dry_run_report
 from .scanner import extract_app_id_from_path, find_normal_screenshots
+from .audit_state import audit_upload_state
 from .steam_apps import resolve_app_names
 from .upload_state import UploadState
 from .vdf_parser import parse_screenshots_vdf, parse_shortcut_names
@@ -34,6 +35,9 @@ def run_sync(config: Config) -> int:
         immich_client = _build_verified_immich_client(config)
         if immich_client is None:
             return 2
+        if config.audit_state:
+            upload_state = UploadState(config.output_dir / "upload_state.sqlite")
+            audit_upload_state(upload_state, immich_client)
 
     candidates, summary = _discover_candidates(config)
 
@@ -137,7 +141,7 @@ def _run_uploads(
 ) -> int:
     """Upload all candidates to Immich and update the shared sync summary."""
 
-    upload_state = UploadState(config.output_dir / "upload_state.json")
+    upload_state = UploadState(config.output_dir / "upload_state.sqlite")
     candidate_asset_ids = [
         (candidate, build_device_asset_id(candidate)) for candidate in candidates
     ]

@@ -29,6 +29,7 @@ class Config:
     log_level: str
     limit: int | None
     app_id_filter: str | None
+    audit_state: bool
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -45,6 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--app-names-overrides")
     parser.add_argument("--limit", type=_positive_int)
     parser.add_argument("--app-id")
+    parser.add_argument("--audit-state", action="store_true")
     return parser
 
 
@@ -85,6 +87,7 @@ def load_config(cli_args: argparse.Namespace | None = None) -> Config:
         log_level=_get_value(cli_args, "log_level", "LOG_LEVEL", "INFO"),
         limit=_get_optional_int(cli_args, "limit", "LIMIT"),
         app_id_filter=_get_value(cli_args, "app_id", "APP_ID", ""),
+        audit_state=_get_bool(cli_args, "audit_state", "AUDIT_STATE", False),
     )
 
 
