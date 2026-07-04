@@ -39,6 +39,12 @@ class CompletedUpload:
     error: Exception | None = None
 
 
+@dataclass(frozen=True)
+class UploadedAsset:
+    pending: PendingUpload
+    upload_result: UploadResult
+
+
 def run_sync(config: Config) -> int:
     """Run Steam2Immich sync using an already-loaded configuration."""
 
@@ -298,18 +304,31 @@ def _upload_new_assets(
     )
 
     if worker_count == 1:
+        uploaded_assets: list[UploadedAsset] = []
         for pending_upload in pending_uploads:
             completed_upload = _upload_pending_asset(immich_client, pending_upload)
-            _record_completed_upload(completed_upload, summary, immich_client, upload_state)
+            uploaded_asset = _record_completed_upload(
+                completed_upload, summary, upload_state
+            )
+            if uploaded_asset is not None:
+                uploaded_assets.append(uploaded_asset)
+        _complete_uploaded_asset_followups(uploaded_assets, immich_client, upload_state)
         return
 
+    uploaded_assets: list[UploadedAsset] = []
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [
             executor.submit(_upload_pending_asset_with_new_client, config, pending_upload)
             for pending_upload in pending_uploads
         ]
         for future in as_completed(futures):
-            _record_completed_upload(future.result(), summary, immich_client, upload_state)
+            uploaded_asset = _record_completed_upload(
+                future.result(), summary, upload_state
+            )
+            if uploaded_asset is not None:
+                uploaded_assets.append(uploaded_asset)
+
+    _complete_uploaded_asset_followups(uploaded_assets, immich_client, upload_state)
 
 
 def _upload_pending_asset_with_new_client(
@@ -339,23 +358,22 @@ def _upload_pending_asset(
 def _record_completed_upload(
     completed_upload: CompletedUpload,
     summary: SyncSummary,
-    immich_client: ImmichClient,
     upload_state: UploadState,
-) -> None:
-    """Record an upload result and complete album/tag follow-ups."""
+) -> UploadedAsset | None:
+    """Record an upload result and return it for later follow-ups."""
 
     pending_upload = completed_upload.pending
     candidate = pending_upload.candidate
     if completed_upload.error is not None:
         summary.failed += 1
         logger.warning("Could not upload %s: %s", candidate.chosen_path, completed_upload.error)
-        return
+        return None
 
     upload_result = completed_upload.upload_result
     if upload_result is None:
         summary.failed += 1
         logger.warning("Could not upload %s: upload did not return a result", candidate.chosen_path)
-        return
+        return None
 
     asset_id = upload_result.asset_id
     upload_state.record(
@@ -366,15 +384,6 @@ def _record_completed_upload(
         pending_upload.tag_names,
     )
     upload_state.save()
-
-    _complete_followups(
-        immich_client,
-        upload_state,
-        pending_upload.device_asset_id,
-        asset_id,
-        pending_upload.album_name,
-        candidate,
-    )
 
     if upload_result.duplicate:
         summary.skipped += 1
@@ -391,6 +400,33 @@ def _record_completed_upload(
             candidate.app_id,
             pending_upload.album_name,
             asset_id,
+        )
+    return UploadedAsset(pending_upload, upload_result)
+
+
+def _complete_uploaded_asset_followups(
+    uploaded_assets: list[UploadedAsset],
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> None:
+    """Complete album/tag follow-ups after all new uploads are recorded."""
+
+    if not uploaded_assets:
+        return
+
+    logger.info(
+        "Completing Immich album/tag follow-ups for %d uploaded asset(s).",
+        len(uploaded_assets),
+    )
+    for uploaded_asset in uploaded_assets:
+        pending_upload = uploaded_asset.pending
+        _complete_followups(
+            immich_client,
+            upload_state,
+            pending_upload.device_asset_id,
+            uploaded_asset.upload_result.asset_id,
+            pending_upload.album_name,
+            pending_upload.candidate,
         )
 
 

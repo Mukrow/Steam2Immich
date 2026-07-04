@@ -694,3 +694,50 @@ def test_run_uploads_uses_worker_clients_for_parallel_new_uploads(
         "asset-two",
     ]
     assert len(main_client.added_albums) == 2
+
+
+def test_run_uploads_completes_new_uploads_before_followups(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+    events: list[str] = []
+
+    class EventImmichClient(FakeImmichClient):
+        def upload_asset(
+            self, candidate: ScreenshotCandidate, device_asset_id: str
+        ) -> UploadResult:
+            events.append(f"upload:{candidate.chosen_path.stem}")
+            return UploadResult(f"asset-{candidate.chosen_path.stem}")
+
+        def add_asset_to_album(self, album_id: str, asset_id: str) -> None:
+            events.append(f"album:{asset_id}")
+            super().add_asset_to_album(album_id, asset_id)
+
+        def tag_asset(self, tag_id: str, asset_id: str) -> None:
+            events.append(f"tag:{asset_id}")
+            super().tag_asset(tag_id, asset_id)
+
+    candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
+    candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        [candidate_one, candidate_two],
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        EventImmichClient(),
+    )
+
+    assert exit_code == 0
+    first_followup_index = min(
+        index
+        for index, event in enumerate(events)
+        if event.startswith(("album:", "tag:"))
+    )
+    assert events[:first_followup_index] == ["upload:one", "upload:two"]
