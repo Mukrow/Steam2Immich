@@ -59,6 +59,7 @@ STEAM2IMMICH_IMMICH_API_KEY=
 STEAM2IMMICH_OUTPUT_DIR=workdir
 STEAM2IMMICH_APP_NAMES_OVERRIDES=app_names_overrides.json
 STEAM2IMMICH_DRY_RUN=true
+STEAM2IMMICH_AUDIT_STATE=false
 STEAM2IMMICH_ALBUM_MODE=single
 STEAM2IMMICH_SINGLE_ALBUM_NAME=Steam Screenshots
 STEAM2IMMICH_ALBUM_PREFIX=Steam -
@@ -76,6 +77,7 @@ Required Immich API key permissions:
 - `album.read`
 - `album.create`
 - `albumAsset.create`
+- `asset.read`
 - `tag.read`
 - `tag.create`
 - `tag.asset`
@@ -106,6 +108,12 @@ Upload everything:
 steam2immich --log-level INFO
 ```
 
+Audit local state before uploading:
+
+```bash
+steam2immich --audit-state --log-level INFO
+```
+
 The module entrypoint also remains available:
 
 ```bash
@@ -124,6 +132,7 @@ Supported CLI arguments:
 - `--app-names-overrides <path>`
 - `--app-id <app_id>`
 - `--limit <number>`
+- `--audit-state`
 
 ## How It Works
 
@@ -191,6 +200,11 @@ whether upload, album assignment, and tag assignment are complete for the
 current target album and tag set. Completed assets are skipped. Incomplete
 album/tag follow-ups are retried on later runs without uploading the image
 again.
+
+Set `STEAM2IMMICH_AUDIT_STATE=true` or pass `--audit-state` to verify local
+state against Immich before scanning Steam files. The audit removes records for
+assets that no longer exist in Immich, marks missing album/tag follow-ups as
+pending, and marks pending follow-ups complete when Immich already has them.
 
 ## Logging
 

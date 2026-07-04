@@ -101,15 +101,9 @@ class ImmichClient:
     def get_or_create_album(self, name: str) -> str:
         """Return an existing album ID by name, or create the album."""
 
-        if name in self._album_cache:
-            return self._album_cache[name]
-
-        for album in self._list_albums():
-            album_name = album.get("albumName") or album.get("title")
-            album_id = album.get("id")
-            if album_name == name and album_id:
-                self._album_cache[name] = str(album_id)
-                return str(album_id)
+        album_id = self.get_album(name)
+        if album_id is not None:
+            return album_id
 
         try:
             response = self.session.post(
@@ -141,6 +135,88 @@ class ImmichClient:
             raise ImmichClientError(f"Immich add asset to album request failed: {error}") from error
 
         self._raise_for_status(response, "add asset to album")
+
+    def get_asset(self, asset_id: str) -> dict[str, Any] | None:
+        """Return one Immich asset, or None when it no longer exists."""
+
+        try:
+            response = self.session.get(
+                self._url(f"/assets/{asset_id}"),
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise ImmichClientError(f"Immich get asset request failed: {error}") from error
+
+        if _is_missing_asset_response(response):
+            return None
+
+        payload = self._json_response(response, "get asset")
+        if not isinstance(payload, dict):
+            raise ImmichClientError(f"Get asset response was not an object: {payload}")
+        return payload
+
+    def album_contains_asset(self, album_name: str, asset_id: str) -> bool:
+        """Return whether an album exists and contains an asset."""
+
+        album_id = self.get_album(album_name)
+        if album_id is None:
+            return False
+
+        try:
+            response = self.session.get(
+                self._url(f"/albums/{album_id}"),
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise ImmichClientError(f"Immich get album request failed: {error}") from error
+
+        if response.status_code == 404:
+            return False
+
+        payload = self._json_response(response, "get album")
+        if not isinstance(payload, dict):
+            raise ImmichClientError(f"Get album response was not an object: {payload}")
+
+        asset_ids = _asset_ids_from_album(payload)
+        if asset_ids is None:
+            raise ImmichClientError(
+                f"Get album response did not include asset membership for {album_name!r}"
+            )
+        return asset_id in asset_ids
+
+    def asset_has_tags(self, asset: dict[str, Any], tag_names: list[str]) -> bool:
+        """Return whether an asset response includes all desired tag names."""
+
+        tag_values = asset.get("tags")
+        if not isinstance(tag_values, list):
+            raise ImmichClientError("Get asset response did not include tag membership")
+
+        actual_names: set[str] = set()
+        for tag in tag_values:
+            if isinstance(tag, dict):
+                actual_names.update(
+                    _normalize_tag_name(tag_name) for tag_name in _tag_name_candidates(tag)
+                )
+            elif isinstance(tag, str):
+                actual_names.add(_normalize_tag_name(tag))
+
+        desired_names = {_normalize_tag_name(tag_name) for tag_name in tag_names}
+        return desired_names.issubset(actual_names)
+
+    def get_album(self, name: str) -> str | None:
+        """Return an existing album ID by name without creating it."""
+
+        if name in self._album_cache:
+            return self._album_cache[name]
+
+        for album in self._list_albums():
+            album_name = album.get("albumName") or album.get("title")
+            album_id = album.get("id")
+            if album_name == name and album_id:
+                self._album_cache[name] = str(album_id)
+                return str(album_id)
+
+        return None
 
     def get_tag(self, name: str) -> str | None:
         """Return an existing tag ID by name, if Immich already has it."""
@@ -332,6 +408,31 @@ def _tag_name_candidates(tag: dict[str, Any]) -> list[str]:
     return candidates
 
 
+def _asset_ids_from_album(album: dict[str, Any]) -> set[str] | None:
+    """Extract album asset IDs from known Immich album response shapes."""
+
+    asset_values = None
+    for key in ("assets", "albumAssets"):
+        value = album.get(key)
+        if isinstance(value, list):
+            asset_values = value
+            break
+
+    if asset_values is None:
+        return None
+
+    asset_ids: set[str] = set()
+    for asset in asset_values:
+        if isinstance(asset, str):
+            asset_ids.add(asset)
+        elif isinstance(asset, dict):
+            asset_id = asset.get("id") or asset.get("assetId")
+            if isinstance(asset_id, str) and asset_id:
+                asset_ids.add(asset_id)
+
+    return asset_ids
+
+
 def _normalize_tag_name(name: str) -> str:
     """Normalize tag names for exact cache lookup while preserving case."""
 
@@ -353,6 +454,29 @@ def _is_existing_tag_response(response: requests.Response) -> bool:
         message = str(payload)
 
     return "already exists" in str(message).lower()
+
+
+def _is_missing_asset_response(response: requests.Response) -> bool:
+    if response.status_code == 404:
+        return True
+
+    if response.status_code != 400:
+        return False
+
+    message = _response_message(response)
+    normalized_message = message.lower()
+    return "not found" in normalized_message and "asset.read" in normalized_message
+
+
+def _response_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text
+
+    if isinstance(payload, dict):
+        return str(payload.get("message", ""))
+    return str(payload)
 
 
 def _major_version(payload: dict[str, Any]) -> int | None:

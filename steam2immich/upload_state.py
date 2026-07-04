@@ -190,6 +190,25 @@ class UploadState:
 
         self._update_followup_status(device_asset_id, "tags_added")
 
+    def mark_album_pending(self, device_asset_id: str) -> None:
+        """Mark album assignment as pending for an uploaded asset."""
+
+        self._update_followup_status(device_asset_id, "album_added", False)
+
+    def mark_tags_pending(self, device_asset_id: str) -> None:
+        """Mark tag assignment as pending for an uploaded asset."""
+
+        self._update_followup_status(device_asset_id, "tags_added", False)
+
+    def forget(self, device_asset_id: str) -> None:
+        """Remove one local upload record from state."""
+
+        self._connection.execute(
+            "DELETE FROM uploads WHERE device_asset_id = ?",
+            (device_asset_id,),
+        )
+        self._connection.commit()
+
     def record_error(self, device_asset_id: str, message: str) -> None:
         """Store the latest non-fatal sync error for a local asset record."""
 
@@ -240,15 +259,17 @@ class UploadState:
         )
         self._connection.commit()
 
-    def _update_followup_status(self, device_asset_id: str, key: str) -> None:
+    def _update_followup_status(
+        self, device_asset_id: str, key: str, completed: bool = True
+    ) -> None:
         """Update a boolean follow-up status field on an existing record."""
 
         if key not in {"album_added", "tags_added"}:
             raise ValueError(f"Unsupported follow-up status key: {key}")
 
         self._connection.execute(
-            f"UPDATE uploads SET {key} = 1 WHERE device_asset_id = ?",
-            (device_asset_id,),
+            f"UPDATE uploads SET {key} = ? WHERE device_asset_id = ?",
+            (int(completed), device_asset_id),
         )
         record = self.get_record(device_asset_id)
         if (

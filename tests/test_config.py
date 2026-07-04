@@ -19,6 +19,7 @@ def _empty_args() -> argparse.Namespace:
         log_level=None,
         limit=None,
         app_id=None,
+        audit_state=False,
     )
 
 
@@ -58,3 +59,21 @@ def test_unset_limit_is_none(monkeypatch) -> None:
     config = load_config(_empty_args())
 
     assert config.limit is None
+
+
+def test_audit_state_can_be_enabled_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("STEAM2IMMICH_AUDIT_STATE", "true")
+
+    config = load_config(_empty_args())
+
+    assert config.audit_state is True
+
+
+def test_cli_audit_state_beats_false_env(monkeypatch) -> None:
+    monkeypatch.setenv("STEAM2IMMICH_AUDIT_STATE", "false")
+    args = _empty_args()
+    args.audit_state = True
+
+    config = load_config(args)
+
+    assert config.audit_state is True

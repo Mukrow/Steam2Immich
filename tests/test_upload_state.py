@@ -128,3 +128,25 @@ def test_upload_state_clears_error_when_followups_complete(
 
     assert state.records["device-asset-id"]["last_error"] is None
     assert state.records["device-asset-id"]["last_attempt_at"] is None
+
+
+def test_upload_state_can_mark_followups_pending(tmp_path, candidate_factory) -> None:
+    state = UploadState(tmp_path / "upload_state.sqlite")
+    state.record("device-asset-id", "asset-id", candidate_factory())
+    state.mark_album_added("device-asset-id")
+    state.mark_tags_added("device-asset-id")
+
+    state.mark_album_pending("device-asset-id")
+    state.mark_tags_pending("device-asset-id")
+
+    assert state.records["device-asset-id"]["album_added"] is False
+    assert state.records["device-asset-id"]["tags_added"] is False
+
+
+def test_upload_state_can_forget_record(tmp_path, candidate_factory) -> None:
+    state = UploadState(tmp_path / "upload_state.sqlite")
+    state.record("device-asset-id", "asset-id", candidate_factory())
+
+    state.forget("device-asset-id")
+
+    assert state.has("device-asset-id") is False
