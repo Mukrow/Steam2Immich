@@ -60,6 +60,7 @@ STEAM2IMMICH_OUTPUT_DIR=workdir
 STEAM2IMMICH_APP_NAMES_OVERRIDES=app_names_overrides.json
 STEAM2IMMICH_DRY_RUN=true
 STEAM2IMMICH_AUDIT_STATE=false
+STEAM2IMMICH_UPLOAD_WORKERS=1
 STEAM2IMMICH_ALBUM_MODE=single
 STEAM2IMMICH_SINGLE_ALBUM_NAME=Steam Screenshots
 STEAM2IMMICH_ALBUM_PREFIX=Steam -
@@ -108,6 +109,12 @@ Upload everything:
 steam2immich --log-level INFO
 ```
 
+Upload with parallel workers:
+
+```bash
+steam2immich --upload-workers 4 --log-level INFO
+```
+
 Audit local state before uploading:
 
 ```bash
@@ -133,6 +140,7 @@ Supported CLI arguments:
 - `--app-id <app_id>`
 - `--limit <number>`
 - `--audit-state`
+- `--upload-workers <number>`
 
 ## How It Works
 
@@ -205,6 +213,10 @@ Set `STEAM2IMMICH_AUDIT_STATE=true` or pass `--audit-state` to verify local
 state against Immich before scanning Steam files. The audit removes records for
 assets that no longer exist in Immich, marks missing album/tag follow-ups as
 pending, and marks pending follow-ups complete when Immich already has them.
+
+Set `STEAM2IMMICH_UPLOAD_WORKERS` or pass `--upload-workers` to upload multiple
+new assets concurrently. The default is `1`. Start with a small value such as
+`4`; very high values can overload Immich or the storage backing it.
 
 ## Logging
 

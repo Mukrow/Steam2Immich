@@ -125,16 +125,24 @@ class ImmichClient:
     def add_asset_to_album(self, album_id: str, asset_id: str) -> None:
         """Add one uploaded asset to an Immich album."""
 
+        self.add_assets_to_album(album_id, [asset_id])
+
+    def add_assets_to_album(self, album_id: str, asset_ids: list[str]) -> None:
+        """Add uploaded assets to an Immich album."""
+
+        if not asset_ids:
+            return
+
         try:
             response = self.session.put(
                 self._url(f"/albums/{album_id}/assets"),
-                json={"ids": [asset_id]},
+                json={"ids": asset_ids},
                 timeout=self.timeout,
             )
         except requests.RequestException as error:
-            raise ImmichClientError(f"Immich add asset to album request failed: {error}") from error
+            raise ImmichClientError(f"Immich add assets to album request failed: {error}") from error
 
-        self._raise_for_status(response, "add asset to album")
+        self._raise_for_status(response, "add assets to album")
 
     def get_asset(self, asset_id: str) -> dict[str, Any] | None:
         """Return one Immich asset, or None when it no longer exists."""
@@ -270,16 +278,24 @@ class ImmichClient:
     def tag_asset(self, tag_id: str, asset_id: str) -> None:
         """Apply one tag to one uploaded asset."""
 
+        self.tag_assets(tag_id, [asset_id])
+
+    def tag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
+        """Apply one tag to uploaded assets."""
+
+        if not asset_ids:
+            return
+
         try:
             response = self.session.put(
                 self._url(f"/tags/{tag_id}/assets"),
-                json={"ids": [asset_id]},
+                json={"ids": asset_ids},
                 timeout=self.timeout,
             )
         except requests.RequestException as error:
-            raise ImmichClientError(f"Immich tag asset request failed: {error}") from error
+            raise ImmichClientError(f"Immich tag assets request failed: {error}") from error
 
-        self._raise_for_status(response, "tag asset")
+        self._raise_for_status(response, "tag assets")
 
     def _list_albums(self) -> list[dict[str, Any]]:
         """Fetch albums visible to the API key owner."""

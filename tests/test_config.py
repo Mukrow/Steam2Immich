@@ -20,6 +20,7 @@ def _empty_args() -> argparse.Namespace:
         limit=None,
         app_id=None,
         audit_state=False,
+        upload_workers=None,
     )
 
 
@@ -77,3 +78,21 @@ def test_cli_audit_state_beats_false_env(monkeypatch) -> None:
     config = load_config(args)
 
     assert config.audit_state is True
+
+
+def test_upload_workers_can_be_enabled_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("STEAM2IMMICH_UPLOAD_WORKERS", "4")
+
+    config = load_config(_empty_args())
+
+    assert config.upload_workers == 4
+
+
+def test_cli_upload_workers_beats_env(monkeypatch) -> None:
+    monkeypatch.setenv("STEAM2IMMICH_UPLOAD_WORKERS", "2")
+    args = _empty_args()
+    args.upload_workers = 6
+
+    config = load_config(args)
+
+    assert config.upload_workers == 6

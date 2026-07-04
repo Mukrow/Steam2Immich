@@ -1,9 +1,12 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from .config import Config
 from .immich_client import (
     ImmichClient,
     ImmichClientError,
+    UploadResult,
     album_name_for_candidate,
     build_device_asset_id,
     tag_names_for_candidate,
@@ -19,6 +22,42 @@ from .vdf_parser import parse_screenshots_vdf, parse_shortcut_names
 
 
 logger = logging.getLogger("steam2immich")
+FOLLOWUP_BATCH_SIZE = 200
+
+
+@dataclass(frozen=True)
+class PendingUpload:
+    candidate: ScreenshotCandidate
+    device_asset_id: str
+    album_name: str
+    tag_names: list[str]
+
+
+@dataclass(frozen=True)
+class CompletedUpload:
+    pending: PendingUpload
+    upload_result: UploadResult | None = None
+    error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class PendingFollowup:
+    device_asset_id: str
+    asset_id: str
+    album_name: str
+    tag_names: list[str]
+    candidate: ScreenshotCandidate
+
+
+def _followup_chunks(
+    pending_followups: list[PendingFollowup],
+) -> list[list[PendingFollowup]]:
+    """Split Immich follow-up work into bounded request payloads."""
+
+    return [
+        pending_followups[index : index + FOLLOWUP_BATCH_SIZE]
+        for index in range(0, len(pending_followups), FOLLOWUP_BATCH_SIZE)
+    ]
 
 
 def run_sync(config: Config) -> int:
@@ -147,8 +186,10 @@ def _run_uploads(
     ]
 
     logger.info("Uploading selected source files to Immich.")
+    pending_uploads: list[PendingUpload] = []
+    pending_followups: list[PendingFollowup] = []
     for candidate, device_asset_id in candidate_asset_ids:
-        _upload_candidate(
+        pending_upload, pending_followup = _prepare_candidate_upload(
             candidate,
             device_asset_id,
             config,
@@ -156,19 +197,27 @@ def _run_uploads(
             immich_client,
             upload_state,
         )
+        if pending_upload is not None:
+            pending_uploads.append(pending_upload)
+        if pending_followup is not None:
+            pending_followups.append(pending_followup)
 
+    pending_followups.extend(
+        _upload_new_assets(pending_uploads, config, summary, immich_client, upload_state)
+    )
+    _complete_batched_followups(pending_followups, immich_client, upload_state)
     return 0
 
 
-def _upload_candidate(
+def _prepare_candidate_upload(
     candidate: ScreenshotCandidate,
     device_asset_id: str,
     config: Config,
     summary: SyncSummary,
     immich_client: ImmichClient,
     upload_state: UploadState,
-) -> None:
-    """Upload one candidate, including album and tag follow-ups."""
+) -> tuple[PendingUpload | None, PendingFollowup | None]:
+    """Prepare one candidate for upload or retry existing follow-ups."""
 
     album_name = album_name_for_candidate(
         candidate,
@@ -192,7 +241,7 @@ def _upload_candidate(
                     candidate.chosen_path,
                     message,
                 )
-                return
+                return None, None
 
             upload_state.prepare_followups(device_asset_id, album_name, tag_names)
             if upload_state.is_complete(device_asset_id, album_name, tag_names):
@@ -202,65 +251,370 @@ def _upload_candidate(
                     device_asset_id,
                     candidate.chosen_path,
                 )
-                return
+                return None, None
 
             logger.info(
-                "Retrying incomplete Immich follow-ups asset_id=%s app_id=%s album=%s",
+                "Queued incomplete Immich follow-ups asset_id=%s app_id=%s album=%s",
                 asset_id,
                 candidate.app_id,
                 album_name,
             )
-            _complete_followups(
-                immich_client,
-                upload_state,
-                device_asset_id,
-                asset_id,
-                album_name,
-                candidate,
+            pending_followup = PendingFollowup(
+                device_asset_id=device_asset_id,
+                asset_id=asset_id,
+                album_name=album_name,
+                tag_names=tag_names,
+                candidate=candidate,
             )
             upload_state.save()
             summary.skipped += 1
-            return
+            return None, pending_followup
 
         logger.debug(
-            "Uploading source asset app_id=%s path=%s",
+            "Queued source asset for upload app_id=%s path=%s",
             candidate.app_id,
             candidate.chosen_path,
         )
-
-        upload_result = immich_client.upload_asset(candidate, device_asset_id)
-        asset_id = upload_result.asset_id
-        upload_state.record(device_asset_id, asset_id, candidate, album_name, tag_names)
-        upload_state.save()
-
-        _complete_followups(
-            immich_client,
-            upload_state,
-            device_asset_id,
-            asset_id,
-            album_name,
-            candidate,
-        )
-
-        if upload_result.duplicate:
-            summary.skipped += 1
-            logger.info(
-                "Immich reported duplicate asset app_id=%s album=%s asset_id=%s",
-                candidate.app_id,
-                album_name,
-                asset_id,
-            )
-        else:
-            summary.uploaded += 1
-            logger.info(
-                "Uploaded asset app_id=%s album=%s asset_id=%s",
-                candidate.app_id,
-                album_name,
-                asset_id,
-            )
+        return PendingUpload(candidate, device_asset_id, album_name, tag_names), None
     except (OSError, ImmichClientError) as error:
         summary.failed += 1
         logger.warning("Could not upload %s: %s", candidate.chosen_path, error)
+        return None, None
+
+
+def _upload_candidate(
+    candidate: ScreenshotCandidate,
+    device_asset_id: str,
+    config: Config,
+    summary: SyncSummary,
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> None:
+    """Upload one candidate, including album and tag follow-ups."""
+
+    pending_upload, pending_followup = _prepare_candidate_upload(
+        candidate,
+        device_asset_id,
+        config,
+        summary,
+        immich_client,
+        upload_state,
+    )
+    pending_followups = [pending_followup] if pending_followup is not None else []
+    if pending_upload is not None:
+        pending_followups.extend(
+            _upload_new_assets([pending_upload], config, summary, immich_client, upload_state)
+        )
+    _complete_batched_followups(pending_followups, immich_client, upload_state)
+
+
+def _upload_new_assets(
+    pending_uploads: list[PendingUpload],
+    config: Config,
+    summary: SyncSummary,
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> list[PendingFollowup]:
+    """Upload new assets, optionally in parallel, and return follow-up work."""
+
+    if not pending_uploads:
+        return []
+
+    worker_count = min(config.upload_workers, len(pending_uploads))
+    logger.info(
+        "Uploading %d new source asset(s) with %d worker(s).",
+        len(pending_uploads),
+        worker_count,
+    )
+
+    if worker_count == 1:
+        pending_followups: list[PendingFollowup] = []
+        for pending_upload in pending_uploads:
+            completed_upload = _upload_pending_asset(immich_client, pending_upload)
+            pending_followup = _record_completed_upload(
+                completed_upload, summary, upload_state
+            )
+            if pending_followup is not None:
+                pending_followups.append(pending_followup)
+        return pending_followups
+
+    pending_followups: list[PendingFollowup] = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(_upload_pending_asset_with_new_client, config, pending_upload)
+            for pending_upload in pending_uploads
+        ]
+        for future in as_completed(futures):
+            pending_followup = _record_completed_upload(
+                future.result(), summary, upload_state
+            )
+            if pending_followup is not None:
+                pending_followups.append(pending_followup)
+
+    return pending_followups
+
+
+def _upload_pending_asset_with_new_client(
+    config: Config, pending_upload: PendingUpload
+) -> CompletedUpload:
+    """Upload one pending asset using a worker-owned Immich client."""
+
+    immich_client = ImmichClient(config.immich_base_url, config.immich_api_key)
+    return _upload_pending_asset(immich_client, pending_upload)
+
+
+def _upload_pending_asset(
+    immich_client: ImmichClient, pending_upload: PendingUpload
+) -> CompletedUpload:
+    """Upload one pending asset and capture success or failure."""
+
+    try:
+        upload_result = immich_client.upload_asset(
+            pending_upload.candidate,
+            pending_upload.device_asset_id,
+        )
+        return CompletedUpload(pending_upload, upload_result=upload_result)
+    except (OSError, ImmichClientError) as error:
+        return CompletedUpload(pending_upload, error=error)
+
+
+def _record_completed_upload(
+    completed_upload: CompletedUpload,
+    summary: SyncSummary,
+    upload_state: UploadState,
+) -> PendingFollowup | None:
+    """Record an upload result and return it for later follow-ups."""
+
+    pending_upload = completed_upload.pending
+    candidate = pending_upload.candidate
+    if completed_upload.error is not None:
+        summary.failed += 1
+        logger.warning("Could not upload %s: %s", candidate.chosen_path, completed_upload.error)
+        return None
+
+    upload_result = completed_upload.upload_result
+    if upload_result is None:
+        summary.failed += 1
+        logger.warning("Could not upload %s: upload did not return a result", candidate.chosen_path)
+        return None
+
+    asset_id = upload_result.asset_id
+    upload_state.record(
+        pending_upload.device_asset_id,
+        asset_id,
+        candidate,
+        pending_upload.album_name,
+        pending_upload.tag_names,
+    )
+    upload_state.save()
+
+    if upload_result.duplicate:
+        summary.skipped += 1
+        logger.info(
+            "Immich reported duplicate asset app_id=%s album=%s asset_id=%s",
+            candidate.app_id,
+            pending_upload.album_name,
+            asset_id,
+        )
+    else:
+        summary.uploaded += 1
+        logger.info(
+            "Uploaded asset app_id=%s album=%s asset_id=%s",
+            candidate.app_id,
+            pending_upload.album_name,
+            asset_id,
+        )
+    return PendingFollowup(
+        device_asset_id=pending_upload.device_asset_id,
+        asset_id=asset_id,
+        album_name=pending_upload.album_name,
+        tag_names=pending_upload.tag_names,
+        candidate=candidate,
+    )
+
+
+def _complete_batched_followups(
+    pending_followups: list[PendingFollowup],
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> None:
+    """Complete album/tag follow-ups in grouped Immich requests."""
+
+    if not pending_followups:
+        return
+
+    logger.info(
+        "Completing Immich album/tag follow-ups for %d asset(s).",
+        len(pending_followups),
+    )
+    _complete_album_followups(immich_client, upload_state, pending_followups)
+    _complete_tag_followups(immich_client, upload_state, pending_followups)
+
+
+def _complete_album_followups(
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+    pending_followups: list[PendingFollowup],
+) -> None:
+    """Complete pending album follow-ups grouped by album."""
+
+    followups_by_album: dict[str, list[PendingFollowup]] = {}
+    for pending_followup in pending_followups:
+        if upload_state.needs_album(pending_followup.device_asset_id):
+            followups_by_album.setdefault(
+                pending_followup.album_name,
+                [],
+            ).append(pending_followup)
+
+    for album_name, album_followups in followups_by_album.items():
+        try:
+            album_id = immich_client.get_or_create_album(album_name)
+        except ImmichClientError as error:
+            logger.warning(
+                "Could not resolve album %s for %d asset(s): %s",
+                album_name,
+                len(album_followups),
+                error,
+            )
+            for pending_followup in album_followups:
+                _add_to_album(
+                    immich_client,
+                    upload_state,
+                    pending_followup.device_asset_id,
+                    pending_followup.asset_id,
+                    album_name,
+                )
+            continue
+
+        for album_chunk in _followup_chunks(album_followups):
+            try:
+                immich_client.add_assets_to_album(
+                    album_id,
+                    [pending_followup.asset_id for pending_followup in album_chunk],
+                )
+                for pending_followup in album_chunk:
+                    upload_state.mark_album_added(pending_followup.device_asset_id)
+                upload_state.save()
+            except ImmichClientError as error:
+                logger.warning(
+                    "Could not batch add %d asset(s) to album %s: %s",
+                    len(album_chunk),
+                    album_name,
+                    error,
+                )
+                for pending_followup in album_chunk:
+                    _add_to_album(
+                        immich_client,
+                        upload_state,
+                        pending_followup.device_asset_id,
+                        pending_followup.asset_id,
+                        album_name,
+                    )
+
+
+def _complete_tag_followups(
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+    pending_followups: list[PendingFollowup],
+) -> None:
+    """Complete pending tag follow-ups grouped by tag name."""
+
+    needed_followups = [
+        pending_followup
+        for pending_followup in pending_followups
+        if upload_state.needs_tags(pending_followup.device_asset_id)
+    ]
+    successful_tag_names_by_device_asset_id = {
+        pending_followup.device_asset_id: set() for pending_followup in needed_followups
+    }
+
+    followups_by_tag: dict[str, list[PendingFollowup]] = {}
+    for pending_followup in needed_followups:
+        for tag_name in pending_followup.tag_names:
+            followups_by_tag.setdefault(tag_name, []).append(pending_followup)
+
+    for tag_name, tag_followups in followups_by_tag.items():
+        try:
+            tag_id = immich_client.get_tag(tag_name)
+            if tag_id is None:
+                tag_id = immich_client.create_tag(tag_name)
+        except ImmichClientError as error:
+            logger.warning(
+                "Could not resolve tag %s for %d asset(s): %s",
+                tag_name,
+                len(tag_followups),
+                error,
+            )
+            _complete_tag_followup_fallback(
+                immich_client,
+                upload_state,
+                tag_name,
+                tag_followups,
+                successful_tag_names_by_device_asset_id,
+            )
+            continue
+
+        for tag_chunk in _followup_chunks(tag_followups):
+            try:
+                immich_client.tag_assets(
+                    tag_id,
+                    [pending_followup.asset_id for pending_followup in tag_chunk],
+                )
+                for pending_followup in tag_chunk:
+                    successful_tag_names_by_device_asset_id[
+                        pending_followup.device_asset_id
+                    ].add(tag_name)
+            except ImmichClientError as error:
+                logger.warning(
+                    "Could not batch apply tag %s to %d asset(s): %s",
+                    tag_name,
+                    len(tag_chunk),
+                    error,
+                )
+                _complete_tag_followup_fallback(
+                    immich_client,
+                    upload_state,
+                    tag_name,
+                    tag_chunk,
+                    successful_tag_names_by_device_asset_id,
+                )
+
+    for pending_followup in needed_followups:
+        successful_tag_names = successful_tag_names_by_device_asset_id[
+            pending_followup.device_asset_id
+        ]
+        if all(tag_name in successful_tag_names for tag_name in pending_followup.tag_names):
+            upload_state.mark_tags_added(pending_followup.device_asset_id)
+            upload_state.save()
+
+
+def _complete_tag_followup_fallback(
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+    tag_name: str,
+    tag_followups: list[PendingFollowup],
+    successful_tag_names_by_device_asset_id: dict[str, set[str]],
+) -> None:
+    """Retry one failed tag batch per asset."""
+
+    for pending_followup in tag_followups:
+        try:
+            tag_id = immich_client.get_tag(tag_name)
+            if tag_id is None:
+                tag_id = immich_client.create_tag(tag_name)
+            immich_client.tag_asset(tag_id, pending_followup.asset_id)
+            successful_tag_names_by_device_asset_id[
+                pending_followup.device_asset_id
+            ].add(tag_name)
+        except ImmichClientError as error:
+            upload_state.record_error(pending_followup.device_asset_id, f"tags: {error}")
+            upload_state.save()
+            logger.warning(
+                "Uploaded asset %s, but could not tag it with %s: %s",
+                pending_followup.asset_id,
+                tag_name,
+                error,
+            )
 
 
 def _build_verified_immich_client(config: Config) -> ImmichClient | None:
