@@ -1,9 +1,12 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from .config import Config
 from .immich_client import (
     ImmichClient,
     ImmichClientError,
+    UploadResult,
     album_name_for_candidate,
     build_device_asset_id,
     tag_names_for_candidate,
@@ -19,6 +22,21 @@ from .vdf_parser import parse_screenshots_vdf, parse_shortcut_names
 
 
 logger = logging.getLogger("steam2immich")
+
+
+@dataclass(frozen=True)
+class PendingUpload:
+    candidate: ScreenshotCandidate
+    device_asset_id: str
+    album_name: str
+    tag_names: list[str]
+
+
+@dataclass(frozen=True)
+class CompletedUpload:
+    pending: PendingUpload
+    upload_result: UploadResult | None = None
+    error: Exception | None = None
 
 
 def run_sync(config: Config) -> int:
@@ -147,8 +165,9 @@ def _run_uploads(
     ]
 
     logger.info("Uploading selected source files to Immich.")
+    pending_uploads: list[PendingUpload] = []
     for candidate, device_asset_id in candidate_asset_ids:
-        _upload_candidate(
+        pending_upload = _prepare_candidate_upload(
             candidate,
             device_asset_id,
             config,
@@ -156,19 +175,22 @@ def _run_uploads(
             immich_client,
             upload_state,
         )
+        if pending_upload is not None:
+            pending_uploads.append(pending_upload)
 
+    _upload_new_assets(pending_uploads, config, summary, immich_client, upload_state)
     return 0
 
 
-def _upload_candidate(
+def _prepare_candidate_upload(
     candidate: ScreenshotCandidate,
     device_asset_id: str,
     config: Config,
     summary: SyncSummary,
     immich_client: ImmichClient,
     upload_state: UploadState,
-) -> None:
-    """Upload one candidate, including album and tag follow-ups."""
+) -> PendingUpload | None:
+    """Prepare one candidate for upload or retry existing follow-ups."""
 
     album_name = album_name_for_candidate(
         candidate,
@@ -192,7 +214,7 @@ def _upload_candidate(
                     candidate.chosen_path,
                     message,
                 )
-                return
+                return None
 
             upload_state.prepare_followups(device_asset_id, album_name, tag_names)
             if upload_state.is_complete(device_asset_id, album_name, tag_names):
@@ -202,7 +224,7 @@ def _upload_candidate(
                     device_asset_id,
                     candidate.chosen_path,
                 )
-                return
+                return None
 
             logger.info(
                 "Retrying incomplete Immich follow-ups asset_id=%s app_id=%s album=%s",
@@ -220,47 +242,156 @@ def _upload_candidate(
             )
             upload_state.save()
             summary.skipped += 1
-            return
+            return None
 
         logger.debug(
-            "Uploading source asset app_id=%s path=%s",
+            "Queued source asset for upload app_id=%s path=%s",
             candidate.app_id,
             candidate.chosen_path,
         )
-
-        upload_result = immich_client.upload_asset(candidate, device_asset_id)
-        asset_id = upload_result.asset_id
-        upload_state.record(device_asset_id, asset_id, candidate, album_name, tag_names)
-        upload_state.save()
-
-        _complete_followups(
-            immich_client,
-            upload_state,
-            device_asset_id,
-            asset_id,
-            album_name,
-            candidate,
-        )
-
-        if upload_result.duplicate:
-            summary.skipped += 1
-            logger.info(
-                "Immich reported duplicate asset app_id=%s album=%s asset_id=%s",
-                candidate.app_id,
-                album_name,
-                asset_id,
-            )
-        else:
-            summary.uploaded += 1
-            logger.info(
-                "Uploaded asset app_id=%s album=%s asset_id=%s",
-                candidate.app_id,
-                album_name,
-                asset_id,
-            )
+        return PendingUpload(candidate, device_asset_id, album_name, tag_names)
     except (OSError, ImmichClientError) as error:
         summary.failed += 1
         logger.warning("Could not upload %s: %s", candidate.chosen_path, error)
+        return None
+
+
+def _upload_candidate(
+    candidate: ScreenshotCandidate,
+    device_asset_id: str,
+    config: Config,
+    summary: SyncSummary,
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> None:
+    """Upload one candidate, including album and tag follow-ups."""
+
+    pending_upload = _prepare_candidate_upload(
+        candidate,
+        device_asset_id,
+        config,
+        summary,
+        immich_client,
+        upload_state,
+    )
+    if pending_upload is not None:
+        _upload_new_assets([pending_upload], config, summary, immich_client, upload_state)
+
+
+def _upload_new_assets(
+    pending_uploads: list[PendingUpload],
+    config: Config,
+    summary: SyncSummary,
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> None:
+    """Upload new assets, optionally in parallel, then finish follow-ups."""
+
+    if not pending_uploads:
+        return
+
+    worker_count = min(config.upload_workers, len(pending_uploads))
+    logger.info(
+        "Uploading %d new source asset(s) with %d worker(s).",
+        len(pending_uploads),
+        worker_count,
+    )
+
+    if worker_count == 1:
+        for pending_upload in pending_uploads:
+            completed_upload = _upload_pending_asset(immich_client, pending_upload)
+            _record_completed_upload(completed_upload, summary, immich_client, upload_state)
+        return
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(_upload_pending_asset_with_new_client, config, pending_upload)
+            for pending_upload in pending_uploads
+        ]
+        for future in as_completed(futures):
+            _record_completed_upload(future.result(), summary, immich_client, upload_state)
+
+
+def _upload_pending_asset_with_new_client(
+    config: Config, pending_upload: PendingUpload
+) -> CompletedUpload:
+    """Upload one pending asset using a worker-owned Immich client."""
+
+    immich_client = ImmichClient(config.immich_base_url, config.immich_api_key)
+    return _upload_pending_asset(immich_client, pending_upload)
+
+
+def _upload_pending_asset(
+    immich_client: ImmichClient, pending_upload: PendingUpload
+) -> CompletedUpload:
+    """Upload one pending asset and capture success or failure."""
+
+    try:
+        upload_result = immich_client.upload_asset(
+            pending_upload.candidate,
+            pending_upload.device_asset_id,
+        )
+        return CompletedUpload(pending_upload, upload_result=upload_result)
+    except (OSError, ImmichClientError) as error:
+        return CompletedUpload(pending_upload, error=error)
+
+
+def _record_completed_upload(
+    completed_upload: CompletedUpload,
+    summary: SyncSummary,
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+) -> None:
+    """Record an upload result and complete album/tag follow-ups."""
+
+    pending_upload = completed_upload.pending
+    candidate = pending_upload.candidate
+    if completed_upload.error is not None:
+        summary.failed += 1
+        logger.warning("Could not upload %s: %s", candidate.chosen_path, completed_upload.error)
+        return
+
+    upload_result = completed_upload.upload_result
+    if upload_result is None:
+        summary.failed += 1
+        logger.warning("Could not upload %s: upload did not return a result", candidate.chosen_path)
+        return
+
+    asset_id = upload_result.asset_id
+    upload_state.record(
+        pending_upload.device_asset_id,
+        asset_id,
+        candidate,
+        pending_upload.album_name,
+        pending_upload.tag_names,
+    )
+    upload_state.save()
+
+    _complete_followups(
+        immich_client,
+        upload_state,
+        pending_upload.device_asset_id,
+        asset_id,
+        pending_upload.album_name,
+        candidate,
+    )
+
+    if upload_result.duplicate:
+        summary.skipped += 1
+        logger.info(
+            "Immich reported duplicate asset app_id=%s album=%s asset_id=%s",
+            candidate.app_id,
+            pending_upload.album_name,
+            asset_id,
+        )
+    else:
+        summary.uploaded += 1
+        logger.info(
+            "Uploaded asset app_id=%s album=%s asset_id=%s",
+            candidate.app_id,
+            pending_upload.album_name,
+            asset_id,
+        )
 
 
 def _build_verified_immich_client(config: Config) -> ImmichClient | None:

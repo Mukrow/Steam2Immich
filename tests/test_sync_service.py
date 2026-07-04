@@ -31,6 +31,7 @@ def _config(tmp_path, steam_root: Path, **overrides) -> Config:
         "limit": None,
         "app_id_filter": None,
         "audit_state": False,
+        "upload_workers": 1,
     }
     values.update(overrides)
     return Config(**values)
@@ -645,3 +646,51 @@ def test_run_uploads_does_not_check_server_existing_assets(
 
     assert exit_code == 0
     assert fake_client.uploaded_candidates == [candidate]
+
+
+def test_run_uploads_uses_worker_clients_for_parallel_new_uploads(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+    uploaded_paths: list[str] = []
+
+    class WorkerImmichClient:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def upload_asset(
+            self, candidate: ScreenshotCandidate, device_asset_id: str
+        ) -> UploadResult:
+            uploaded_paths.append(str(candidate.chosen_path))
+            return UploadResult(f"asset-{candidate.chosen_path.stem}")
+
+    candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
+    candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
+    main_client = FakeImmichClient()
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+    monkeypatch.setattr(sync_service, "ImmichClient", WorkerImmichClient)
+
+    exit_code = _run_uploads(
+        [candidate_one, candidate_two],
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+            upload_workers=2,
+        ),
+        SyncSummary(),
+        main_client,
+    )
+
+    assert exit_code == 0
+    assert sorted(uploaded_paths) == sorted(
+        [str(candidate_one.chosen_path), str(candidate_two.chosen_path)]
+    )
+    assert main_client.uploaded_candidates == []
+    assert sorted(record["asset_id"] for record in state.records.values()) == [
+        "asset-one",
+        "asset-two",
+    ]
+    assert len(main_client.added_albums) == 2

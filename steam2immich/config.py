@@ -30,6 +30,7 @@ class Config:
     limit: int | None
     app_id_filter: str | None
     audit_state: bool
+    upload_workers: int
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -47,6 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=_positive_int)
     parser.add_argument("--app-id")
     parser.add_argument("--audit-state", action="store_true")
+    parser.add_argument("--upload-workers", type=_positive_int)
     return parser
 
 
@@ -88,6 +90,7 @@ def load_config(cli_args: argparse.Namespace | None = None) -> Config:
         limit=_get_optional_int(cli_args, "limit", "LIMIT"),
         app_id_filter=_get_value(cli_args, "app_id", "APP_ID", ""),
         audit_state=_get_bool(cli_args, "audit_state", "AUDIT_STATE", False),
+        upload_workers=_get_int(cli_args, "upload_workers", "UPLOAD_WORKERS", 1),
     )
 
 
@@ -135,6 +138,20 @@ def _get_optional_int(
     env_value = os.getenv(f"{ENV_PREFIX}{env_name}")
     if env_value in (None, ""):
         return None
+
+    return _positive_int(env_value)
+
+
+def _get_int(
+    cli_args: argparse.Namespace, cli_name: str, env_name: str, default: int
+) -> int:
+    cli_value = getattr(cli_args, cli_name, None)
+    if cli_value is not None:
+        return cli_value
+
+    env_value = os.getenv(f"{ENV_PREFIX}{env_name}")
+    if env_value in (None, ""):
+        return default
 
     return _positive_int(env_value)
 
