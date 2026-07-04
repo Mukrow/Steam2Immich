@@ -16,7 +16,8 @@ modified.
 - supports single-album and per-game album modes
 - uploads selected original files directly to Immich
 - applies Immich tags: `Steam`, `Steam/<game name>`, `Steam App/<app_id>`
-- keeps local upload history in `workdir/upload_state.json` to skip reruns
+- keeps local upload history in `workdir/upload_state.json` to skip completed reruns
+  and retry incomplete album/tag follow-ups
 - writes dry-run CSV reports under `workdir/reports/`
 
 ## Requirements
@@ -185,8 +186,11 @@ Local upload history is stored in:
 workdir/upload_state.json
 ```
 
-If a generated device asset ID already exists in that file, the app skips that
-asset on later runs.
+If a generated device asset ID already exists in that file, the app checks
+whether upload, album assignment, and tag assignment are complete for the
+current target album and tag set. Completed assets are skipped. Incomplete
+album/tag follow-ups are retried on later runs without uploading the image
+again.
 
 ## Logging
 
@@ -201,7 +205,6 @@ Use `--log-level DEBUG` to see each candidate and chosen path.
 ## Limitations
 
 - duplicate checks are local-state only; server-side duplicate search is not implemented
-- album/tag follow-up retries are not implemented if upload succeeds but follow-up assignment fails
 
 ## Project Structure
 

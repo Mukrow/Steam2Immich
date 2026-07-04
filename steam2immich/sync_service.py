@@ -166,16 +166,58 @@ def _upload_candidate(
 ) -> None:
     """Upload one candidate, including album and tag follow-ups."""
 
-    if upload_state.has(device_asset_id):
-        summary.skipped += 1
-        logger.debug(
-            "Skipping locally-recorded asset device_asset_id=%s path=%s",
-            device_asset_id,
-            candidate.chosen_path,
-        )
-        return
+    album_name = album_name_for_candidate(
+        candidate,
+        config.album_mode,
+        config.single_album_name,
+        config.album_prefix,
+    )
+    tag_names = tag_names_for_candidate(candidate)
 
     try:
+        if upload_state.has(device_asset_id):
+            asset_id = upload_state.get_asset_id(device_asset_id)
+            if asset_id is None:
+                message = "Local upload record is missing Immich asset_id"
+                upload_state.record_error(device_asset_id, message)
+                upload_state.save()
+                summary.failed += 1
+                logger.warning(
+                    "Could not resume locally-recorded asset device_asset_id=%s path=%s: %s",
+                    device_asset_id,
+                    candidate.chosen_path,
+                    message,
+                )
+                return
+
+            upload_state.prepare_followups(device_asset_id, album_name, tag_names)
+            if upload_state.is_complete(device_asset_id, album_name, tag_names):
+                summary.skipped += 1
+                logger.debug(
+                    "Skipping completed local asset device_asset_id=%s path=%s",
+                    device_asset_id,
+                    candidate.chosen_path,
+                )
+                return
+
+            logger.info(
+                "Retrying incomplete Immich follow-ups asset_id=%s app_id=%s album=%s",
+                asset_id,
+                candidate.app_id,
+                album_name,
+            )
+            _complete_followups(
+                immich_client,
+                upload_state,
+                device_asset_id,
+                asset_id,
+                album_name,
+                candidate,
+            )
+            upload_state.save()
+            summary.skipped += 1
+            return
+
         logger.debug(
             "Uploading source asset app_id=%s path=%s",
             candidate.app_id,
@@ -184,17 +226,17 @@ def _upload_candidate(
 
         upload_result = immich_client.upload_asset(candidate, device_asset_id)
         asset_id = upload_result.asset_id
-        upload_state.record(device_asset_id, asset_id, candidate)
+        upload_state.record(device_asset_id, asset_id, candidate, album_name, tag_names)
         upload_state.save()
 
-        album_name = album_name_for_candidate(
+        _complete_followups(
+            immich_client,
+            upload_state,
+            device_asset_id,
+            asset_id,
+            album_name,
             candidate,
-            config.album_mode,
-            config.single_album_name,
-            config.album_prefix,
         )
-        _add_to_album(immich_client, upload_state, device_asset_id, asset_id, album_name)
-        _add_tags(immich_client, upload_state, device_asset_id, asset_id, candidate)
 
         if upload_result.duplicate:
             summary.skipped += 1
@@ -252,12 +294,31 @@ def _add_to_album(
         upload_state.mark_album_added(device_asset_id)
         upload_state.save()
     except ImmichClientError as error:
+        upload_state.record_error(device_asset_id, f"album: {error}")
+        upload_state.save()
         logger.warning(
             "Uploaded asset %s, but could not add it to album %s: %s",
             asset_id,
             album_name,
             error,
         )
+
+
+def _complete_followups(
+    immich_client: ImmichClient,
+    upload_state: UploadState,
+    device_asset_id: str,
+    asset_id: str,
+    album_name: str,
+    candidate: ScreenshotCandidate,
+) -> None:
+    """Retry any incomplete Immich follow-ups for one uploaded asset."""
+
+    if upload_state.needs_album(device_asset_id):
+        _add_to_album(immich_client, upload_state, device_asset_id, asset_id, album_name)
+
+    if upload_state.needs_tags(device_asset_id):
+        _add_tags(immich_client, upload_state, device_asset_id, asset_id, candidate)
 
 
 def _add_tags(
@@ -278,6 +339,8 @@ def _add_tags(
         upload_state.mark_tags_added(device_asset_id)
         upload_state.save()
     except ImmichClientError as error:
+        upload_state.record_error(device_asset_id, f"tags: {error}")
+        upload_state.save()
         logger.warning("Uploaded asset %s, but could not tag it: %s", asset_id, error)
 
 
