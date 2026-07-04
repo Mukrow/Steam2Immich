@@ -1,7 +1,8 @@
-"""Local idempotency state for uploaded Immich assets."""
+"""SQLite idempotency state for uploaded Immich assets."""
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,23 +12,57 @@ from .models import ScreenshotCandidate
 
 logger = logging.getLogger("steam2immich.upload_state")
 
+SCHEMA_VERSION = "1"
+
 
 class UploadState:
     """Read and write local upload records keyed by Immich device asset ID."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.records = self._load()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(self.path)
+        self._connection.row_factory = sqlite3.Row
+        self._initialize_schema()
+
+    @property
+    def records(self) -> dict[str, dict[str, Any]]:
+        """Return a snapshot of all local upload records."""
+
+        rows = self._connection.execute(
+            """
+            SELECT device_asset_id, asset_id, chosen_path, uploaded_at, album_name,
+                   album_added, tag_names_json, tags_added, last_error, last_attempt_at
+            FROM uploads
+            ORDER BY device_asset_id
+            """
+        ).fetchall()
+        return {str(row["device_asset_id"]): _row_to_record(row) for row in rows}
 
     def has(self, device_asset_id: str) -> bool:
         """Return whether a device asset ID has already been uploaded."""
 
-        return device_asset_id in self.records
+        row = self._connection.execute(
+            "SELECT 1 FROM uploads WHERE device_asset_id = ?",
+            (device_asset_id,),
+        ).fetchone()
+        return row is not None
 
     def get_record(self, device_asset_id: str) -> dict[str, Any] | None:
         """Return one local upload record, if present."""
 
-        return self.records.get(device_asset_id)
+        row = self._connection.execute(
+            """
+            SELECT asset_id, chosen_path, uploaded_at, album_name, album_added,
+                   tag_names_json, tags_added, last_error, last_attempt_at
+            FROM uploads
+            WHERE device_asset_id = ?
+            """,
+            (device_asset_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_record(row)
 
     def get_asset_id(self, device_asset_id: str) -> str | None:
         """Return the Immich asset ID for an uploaded asset, if available."""
@@ -51,15 +86,34 @@ class UploadState:
     ) -> None:
         """Store one successful upload in local state."""
 
-        self.records[device_asset_id] = {
-            "asset_id": asset_id,
-            "chosen_path": str(candidate.chosen_path),
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-            "album_name": album_name,
-            "album_added": False,
-            "tag_names": tag_names or [],
-            "tags_added": False,
-        }
+        self._connection.execute(
+            """
+            INSERT INTO uploads (
+                device_asset_id, asset_id, chosen_path, uploaded_at, album_name,
+                album_added, tag_names_json, tags_added, last_error, last_attempt_at
+            )
+            VALUES (?, ?, ?, ?, ?, 0, ?, 0, NULL, NULL)
+            ON CONFLICT(device_asset_id) DO UPDATE SET
+                asset_id = excluded.asset_id,
+                chosen_path = excluded.chosen_path,
+                uploaded_at = excluded.uploaded_at,
+                album_name = excluded.album_name,
+                album_added = 0,
+                tag_names_json = excluded.tag_names_json,
+                tags_added = 0,
+                last_error = NULL,
+                last_attempt_at = NULL
+            """,
+            (
+                device_asset_id,
+                asset_id,
+                str(candidate.chosen_path),
+                _now_iso(),
+                album_name,
+                json.dumps(tag_names or []),
+            ),
+        )
+        self._connection.commit()
 
     def prepare_followups(
         self, device_asset_id: str, album_name: str, tag_names: list[str]
@@ -70,13 +124,32 @@ class UploadState:
         if record is None:
             return
 
+        album_added = bool(record.get("album_added"))
+        tags_added = bool(record.get("tags_added"))
         if record.get("album_name") != album_name:
-            record["album_name"] = album_name
-            record["album_added"] = False
+            album_added = False
 
         if record.get("tag_names") != tag_names:
-            record["tag_names"] = tag_names
-            record["tags_added"] = False
+            tags_added = False
+
+        self._connection.execute(
+            """
+            UPDATE uploads
+            SET album_name = ?,
+                album_added = ?,
+                tag_names_json = ?,
+                tags_added = ?
+            WHERE device_asset_id = ?
+            """,
+            (
+                album_name,
+                int(album_added),
+                json.dumps(tag_names),
+                int(tags_added),
+                device_asset_id,
+            ),
+        )
+        self._connection.commit()
 
     def is_complete(
         self, device_asset_id: str, album_name: str, tag_names: list[str]
@@ -120,51 +193,104 @@ class UploadState:
     def record_error(self, device_asset_id: str, message: str) -> None:
         """Store the latest non-fatal sync error for a local asset record."""
 
-        record = self.records.setdefault(device_asset_id, {})
-        record["last_error"] = message
-        record["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
+        self._connection.execute(
+            """
+            INSERT INTO uploads (device_asset_id, last_error, last_attempt_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(device_asset_id) DO UPDATE SET
+                last_error = excluded.last_error,
+                last_attempt_at = excluded.last_attempt_at
+            """,
+            (device_asset_id, message, _now_iso()),
+        )
+        self._connection.commit()
 
     def save(self) -> None:
-        """Persist local upload records to disk."""
+        """Compatibility no-op; SQLite writes are committed per mutation."""
 
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self.path.with_name(f"{self.path.name}.tmp")
-            temp_path.write_text(
-                json.dumps(self.records, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-            temp_path.replace(self.path)
-        except OSError as error:
-            logger.warning("Could not write upload state %s: %s", self.path, error)
+    def _initialize_schema(self) -> None:
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS state_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
 
-    def _load(self) -> dict[str, dict[str, Any]]:
-        """Load existing upload state, returning an empty state on errors."""
-
-        if not self.path.exists():
-            return {}
-
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            logger.warning("Could not read upload state %s: %s", self.path, error)
-            return {}
-
-        if not isinstance(data, dict):
-            logger.warning("Upload state must be a JSON object: %s", self.path)
-            return {}
-
-        return {
-            str(device_asset_id): record
-            for device_asset_id, record in data.items()
-            if isinstance(record, dict)
-        }
+            CREATE TABLE IF NOT EXISTS uploads (
+                device_asset_id TEXT PRIMARY KEY,
+                asset_id TEXT,
+                chosen_path TEXT,
+                uploaded_at TEXT,
+                album_name TEXT,
+                album_added INTEGER NOT NULL DEFAULT 0,
+                tag_names_json TEXT NOT NULL DEFAULT '[]',
+                tags_added INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                last_attempt_at TEXT
+            );
+            """
+        )
+        self._connection.execute(
+            """
+            INSERT INTO state_metadata (key, value)
+            VALUES ('schema_version', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (SCHEMA_VERSION,),
+        )
+        self._connection.commit()
 
     def _update_followup_status(self, device_asset_id: str, key: str) -> None:
         """Update a boolean follow-up status field on an existing record."""
 
-        record = self.records.get(device_asset_id)
-        if record is not None:
-            record[key] = True
-            if record.get("album_added") is True and record.get("tags_added") is True:
-                record.pop("last_error", None)
+        if key not in {"album_added", "tags_added"}:
+            raise ValueError(f"Unsupported follow-up status key: {key}")
+
+        self._connection.execute(
+            f"UPDATE uploads SET {key} = 1 WHERE device_asset_id = ?",
+            (device_asset_id,),
+        )
+        record = self.get_record(device_asset_id)
+        if (
+            record is not None
+            and record.get("album_added") is True
+            and record.get("tags_added") is True
+        ):
+            self._connection.execute(
+                """
+                UPDATE uploads
+                SET last_error = NULL,
+                    last_attempt_at = NULL
+                WHERE device_asset_id = ?
+                """,
+                (device_asset_id,),
+            )
+        self._connection.commit()
+
+
+def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    tag_names_json = row["tag_names_json"] or "[]"
+    try:
+        tag_names = json.loads(tag_names_json)
+    except json.JSONDecodeError:
+        logger.warning("Invalid tag_names_json in upload state: %s", tag_names_json)
+        tag_names = []
+
+    if not isinstance(tag_names, list):
+        tag_names = []
+
+    return {
+        "asset_id": row["asset_id"],
+        "chosen_path": row["chosen_path"],
+        "uploaded_at": row["uploaded_at"],
+        "album_name": row["album_name"],
+        "album_added": bool(row["album_added"]),
+        "tag_names": [str(tag_name) for tag_name in tag_names],
+        "tags_added": bool(row["tags_added"]),
+        "last_error": row["last_error"],
+        "last_attempt_at": row["last_attempt_at"],
+    }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()

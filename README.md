@@ -16,7 +16,7 @@ modified.
 - supports single-album and per-game album modes
 - uploads selected original files directly to Immich
 - applies Immich tags: `Steam`, `Steam/<game name>`, `Steam App/<app_id>`
-- keeps local upload history in `workdir/upload_state.json` to skip completed reruns
+- keeps local upload history in `workdir/upload_state.sqlite` to skip completed reruns
   and retry incomplete album/tag follow-ups
 - writes dry-run CSV reports under `workdir/reports/`
 
@@ -183,7 +183,7 @@ opened read-only and are not copied or modified.
 Local upload history is stored in:
 
 ```text
-workdir/upload_state.json
+workdir/upload_state.sqlite
 ```
 
 If a generated device asset ID already exists in that file, the app checks

@@ -137,7 +137,7 @@ def _run_uploads(
 ) -> int:
     """Upload all candidates to Immich and update the shared sync summary."""
 
-    upload_state = UploadState(config.output_dir / "upload_state.json")
+    upload_state = UploadState(config.output_dir / "upload_state.sqlite")
     candidate_asset_ids = [
         (candidate, build_device_asset_id(candidate)) for candidate in candidates
     ]
