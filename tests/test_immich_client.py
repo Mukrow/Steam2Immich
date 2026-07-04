@@ -133,6 +133,30 @@ def test_album_contains_asset_checks_album_detail_membership() -> None:
     ]
 
 
+def test_add_assets_to_album_sends_multiple_ids() -> None:
+    session = FakeSession({"get": [], "post": [], "put": [FakeResponse({})]})
+    client = _client_with_session(session)
+
+    client.add_assets_to_album("album-id", ["asset-1", "asset-2"])
+
+    assert session.calls == [
+        (
+            "put",
+            "https://immich.example/api/albums/album-id/assets",
+            {"json": {"ids": ["asset-1", "asset-2"]}, "timeout": 5},
+        )
+    ]
+
+
+def test_add_asset_to_album_wraps_single_id() -> None:
+    session = FakeSession({"get": [], "post": [], "put": [FakeResponse({})]})
+    client = _client_with_session(session)
+
+    client.add_asset_to_album("album-id", "asset-1")
+
+    assert session.calls[0][2]["json"] == {"ids": ["asset-1"]}
+
+
 def test_asset_has_tags_matches_hierarchical_tag_paths() -> None:
     client = _client_with_session(FakeSession({"get": [], "post": [], "put": []}))
     asset = {
@@ -144,6 +168,30 @@ def test_asset_has_tags_matches_hierarchical_tag_paths() -> None:
 
     assert client.asset_has_tags(asset, ["Steam", "Steam/Baldur's Gate 3"]) is True
     assert client.asset_has_tags(asset, ["Steam", "Steam App/1086940"]) is False
+
+
+def test_tag_assets_sends_multiple_ids() -> None:
+    session = FakeSession({"get": [], "post": [], "put": [FakeResponse({})]})
+    client = _client_with_session(session)
+
+    client.tag_assets("tag-id", ["asset-1", "asset-2"])
+
+    assert session.calls == [
+        (
+            "put",
+            "https://immich.example/api/tags/tag-id/assets",
+            {"json": {"ids": ["asset-1", "asset-2"]}, "timeout": 5},
+        )
+    ]
+
+
+def test_tag_asset_wraps_single_id() -> None:
+    session = FakeSession({"get": [], "post": [], "put": [FakeResponse({})]})
+    client = _client_with_session(session)
+
+    client.tag_asset("tag-id", "asset-1")
+
+    assert session.calls[0][2]["json"] == {"ids": ["asset-1"]}
 
 
 def test_get_tag_reuses_existing_tag_without_creating() -> None:

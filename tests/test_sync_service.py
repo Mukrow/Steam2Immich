@@ -260,9 +260,11 @@ class FakeImmichClient:
         self.version_checked = False
         self.uploaded_candidates: list[ScreenshotCandidate] = []
         self.added_albums: list[tuple[str, str]] = []
+        self.added_album_batches: list[tuple[str, list[str]]] = []
         self.tags: dict[str, str] = {}
         self.created_tags: list[str] = []
         self.tagged_assets: list[tuple[str, str]] = []
+        self.tagged_asset_batches: list[tuple[str, list[str]]] = []
 
     def require_v3(self) -> None:
         self.version_checked = True
@@ -281,9 +283,14 @@ class FakeImmichClient:
         return "album-id"
 
     def add_asset_to_album(self, album_id: str, asset_id: str) -> None:
+        self.add_assets_to_album(album_id, [asset_id])
+
+    def add_assets_to_album(self, album_id: str, asset_ids: list[str]) -> None:
         if self.album_error is not None:
             raise self.album_error
-        self.added_albums.append((album_id, asset_id))
+        self.added_album_batches.append((album_id, asset_ids))
+        for asset_id in asset_ids:
+            self.added_albums.append((album_id, asset_id))
 
     def get_tag(self, name: str) -> str | None:
         return self.tags.get(name)
@@ -294,9 +301,14 @@ class FakeImmichClient:
         return f"tag-{name}"
 
     def tag_asset(self, tag_id: str, asset_id: str) -> None:
+        self.tag_assets(tag_id, [asset_id])
+
+    def tag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
         if self.tag_error is not None:
             raise self.tag_error
-        self.tagged_assets.append((tag_id, asset_id))
+        self.tagged_asset_batches.append((tag_id, asset_ids))
+        for asset_id in asset_ids:
+            self.tagged_assets.append((tag_id, asset_id))
 
 
 def test_upload_candidate_skips_completed_locally_recorded_asset(
@@ -709,13 +721,13 @@ def test_run_uploads_completes_new_uploads_before_followups(
             events.append(f"upload:{candidate.chosen_path.stem}")
             return UploadResult(f"asset-{candidate.chosen_path.stem}")
 
-        def add_asset_to_album(self, album_id: str, asset_id: str) -> None:
-            events.append(f"album:{asset_id}")
-            super().add_asset_to_album(album_id, asset_id)
+        def add_assets_to_album(self, album_id: str, asset_ids: list[str]) -> None:
+            events.append(f"album:{','.join(asset_ids)}")
+            super().add_assets_to_album(album_id, asset_ids)
 
-        def tag_asset(self, tag_id: str, asset_id: str) -> None:
-            events.append(f"tag:{asset_id}")
-            super().tag_asset(tag_id, asset_id)
+        def tag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
+            events.append(f"tag:{','.join(asset_ids)}")
+            super().tag_assets(tag_id, asset_ids)
 
     candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
     candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
@@ -741,3 +753,296 @@ def test_run_uploads_completes_new_uploads_before_followups(
         if event.startswith(("album:", "tag:"))
     )
     assert events[:first_followup_index] == ["upload:one", "upload:two"]
+
+
+def test_run_uploads_batches_album_and_tag_followups(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+    candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
+    candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
+    immich_client = FakeImmichClient()
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        [candidate_one, candidate_two],
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert immich_client.added_album_batches == [("album-id", ["asset-1", "asset-2"])]
+    assert sorted(immich_client.tagged_asset_batches) == sorted(
+        [
+            ("tag-Steam", ["asset-1", "asset-2"]),
+            ("tag-Steam/Baldur's Gate 3", ["asset-1", "asset-2"]),
+            ("tag-Steam App/1086940", ["asset-1", "asset-2"]),
+        ]
+    )
+    assert sorted(state.album_added) == sorted(state.records)
+    assert sorted(state.tags_added) == sorted(state.records)
+
+
+def test_run_uploads_chunks_large_album_and_tag_batches(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+    candidates = [
+        candidate_factory(chosen_path=tmp_path / f"shot-{index}.png")
+        for index in range(sync_service.FOLLOWUP_BATCH_SIZE + 1)
+    ]
+    immich_client = FakeImmichClient()
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        candidates,
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert [len(asset_ids) for _album_id, asset_ids in immich_client.added_album_batches] == [
+        sync_service.FOLLOWUP_BATCH_SIZE,
+        1,
+    ]
+
+    tag_batch_sizes_by_tag: dict[str, list[int]] = {}
+    for tag_id, asset_ids in immich_client.tagged_asset_batches:
+        tag_batch_sizes_by_tag.setdefault(tag_id, []).append(len(asset_ids))
+
+    assert tag_batch_sizes_by_tag == {
+        "tag-Steam": [sync_service.FOLLOWUP_BATCH_SIZE, 1],
+        "tag-Steam/Baldur's Gate 3": [sync_service.FOLLOWUP_BATCH_SIZE, 1],
+        "tag-Steam App/1086940": [sync_service.FOLLOWUP_BATCH_SIZE, 1],
+    }
+    assert sorted(state.album_added) == sorted(state.records)
+    assert sorted(state.tags_added) == sorted(state.records)
+
+
+def test_run_uploads_falls_back_when_album_batch_fails(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+
+    class AlbumBatchFailsClient(FakeImmichClient):
+        def add_assets_to_album(self, album_id: str, asset_ids: list[str]) -> None:
+            if len(asset_ids) > 1:
+                raise ImmichClientError("album batch boom")
+            super().add_assets_to_album(album_id, asset_ids)
+
+    candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
+    candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
+    immich_client = AlbumBatchFailsClient()
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        [candidate_one, candidate_two],
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert immich_client.added_albums == [("album-id", "asset-1"), ("album-id", "asset-2")]
+    assert sorted(state.album_added) == sorted(state.records)
+
+
+def test_run_uploads_falls_back_only_for_failed_album_chunk(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+
+    class OneAlbumChunkFailsClient(FakeImmichClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fallback_album_assets: list[str] = []
+
+        def add_assets_to_album(self, album_id: str, asset_ids: list[str]) -> None:
+            if asset_ids == ["asset-3", "asset-4"]:
+                raise ImmichClientError("album chunk boom")
+            super().add_assets_to_album(album_id, asset_ids)
+
+        def add_asset_to_album(self, album_id: str, asset_id: str) -> None:
+            self.fallback_album_assets.append(asset_id)
+            super().add_asset_to_album(album_id, asset_id)
+
+    candidates = [
+        candidate_factory(chosen_path=tmp_path / f"shot-{index}.png")
+        for index in range(5)
+    ]
+    immich_client = OneAlbumChunkFailsClient()
+    monkeypatch.setattr(sync_service, "FOLLOWUP_BATCH_SIZE", 2)
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        candidates,
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert immich_client.fallback_album_assets == ["asset-3", "asset-4"]
+    assert [asset_ids for _album_id, asset_ids in immich_client.added_album_batches] == [
+        ["asset-1", "asset-2"],
+        ["asset-3"],
+        ["asset-4"],
+        ["asset-5"],
+    ]
+    assert sorted(state.album_added) == sorted(state.records)
+
+
+def test_run_uploads_falls_back_when_tag_batch_fails(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+
+    class TagBatchFailsClient(FakeImmichClient):
+        def tag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
+            if len(asset_ids) > 1:
+                raise ImmichClientError("tag batch boom")
+            super().tag_assets(tag_id, asset_ids)
+
+    candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
+    candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
+    immich_client = TagBatchFailsClient()
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        [candidate_one, candidate_two],
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert len(immich_client.tagged_assets) == 6
+    assert sorted(state.tags_added) == sorted(state.records)
+
+
+def test_run_uploads_falls_back_only_for_failed_tag_chunk(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    state = FakeUploadState()
+
+    class OneTagChunkFailsClient(FakeImmichClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fallback_tag_assets: list[tuple[str, str]] = []
+
+        def tag_assets(self, tag_id: str, asset_ids: list[str]) -> None:
+            if asset_ids == ["asset-3", "asset-4"]:
+                raise ImmichClientError("tag chunk boom")
+            super().tag_assets(tag_id, asset_ids)
+
+        def tag_asset(self, tag_id: str, asset_id: str) -> None:
+            self.fallback_tag_assets.append((tag_id, asset_id))
+            super().tag_asset(tag_id, asset_id)
+
+    candidates = [
+        candidate_factory(chosen_path=tmp_path / f"shot-{index}.png")
+        for index in range(5)
+    ]
+    immich_client = OneTagChunkFailsClient()
+    monkeypatch.setattr(sync_service, "FOLLOWUP_BATCH_SIZE", 2)
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        candidates,
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert sorted(immich_client.fallback_tag_assets) == sorted(
+        [
+            ("tag-Steam", "asset-3"),
+            ("tag-Steam", "asset-4"),
+            ("tag-Steam/Baldur's Gate 3", "asset-3"),
+            ("tag-Steam/Baldur's Gate 3", "asset-4"),
+            ("tag-Steam App/1086940", "asset-3"),
+            ("tag-Steam App/1086940", "asset-4"),
+        ]
+    )
+    assert sorted(state.tags_added) == sorted(state.records)
+
+
+def test_run_uploads_batches_existing_incomplete_records_with_new_uploads(
+    tmp_path, steam_root, candidate_factory, monkeypatch
+) -> None:
+    existing_candidate = candidate_factory(chosen_path=tmp_path / "existing.png")
+    new_candidate = candidate_factory(chosen_path=tmp_path / "new.png")
+    existing_device_asset_id = build_device_asset_id(existing_candidate)
+    state = FakeUploadState(
+        {
+            existing_device_asset_id: {
+                "asset_id": "asset-existing",
+                "album_name": "Steam Screenshots",
+                "album_added": False,
+                "tag_names": tag_names_for_candidate(existing_candidate),
+                "tags_added": False,
+            }
+        }
+    )
+    immich_client = FakeImmichClient()
+    monkeypatch.setattr(sync_service, "UploadState", lambda *_args: state)
+
+    exit_code = _run_uploads(
+        [existing_candidate, new_candidate],
+        _config(
+            tmp_path,
+            steam_root,
+            dry_run=False,
+            immich_base_url="https://immich.example",
+            immich_api_key="key",
+        ),
+        SyncSummary(),
+        immich_client,
+    )
+
+    assert exit_code == 0
+    assert immich_client.uploaded_candidates == [new_candidate]
+    assert immich_client.added_album_batches == [
+        ("album-id", ["asset-existing", "asset-1"])
+    ]
+    assert sorted(state.album_added) == sorted(state.records)
+    assert sorted(state.tags_added) == sorted(state.records)
