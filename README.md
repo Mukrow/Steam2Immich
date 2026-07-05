@@ -127,6 +127,12 @@ The module entrypoint also remains available:
 python -m steam2immich.main --dry-run --log-level INFO
 ```
 
+Recommended:
+
+```bash
+steam2immich --upload-workers 4 --audit-state
+```
+
 Supported CLI arguments:
 
 - `--dry-run`
@@ -230,7 +236,8 @@ Use `--log-level DEBUG` to see each candidate and chosen path.
 
 ## Limitations
 
-- duplicate checks are local-state only; server-side duplicate search is not implemented
+- Local state (`workdir/upload_state.sqlite`) is used to avoid repeat upload requests;
+Immich duplicate detection is relied on if local state is missing or incomplete.
 
 ## Project Structure
 
