@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from steam2immich import sync_service
@@ -636,9 +637,10 @@ def test_add_tags_reuses_existing_tags_without_creating(candidate_factory) -> No
 
 
 def test_run_uploads_does_not_check_server_existing_assets(
-    tmp_path, steam_root, candidate_factory, monkeypatch
+    tmp_path, steam_root, candidate_factory, monkeypatch, caplog
 ) -> None:
     # Upload orchestration should rely on local state and v3 upload responses only.
+    caplog.set_level(logging.INFO, logger="steam2immich")
     candidate = candidate_factory()
     fake_client = FakeImmichClient()
     monkeypatch.setattr(sync_service, "UploadState", lambda *_args: FakeUploadState())
@@ -658,11 +660,13 @@ def test_run_uploads_does_not_check_server_existing_assets(
 
     assert exit_code == 0
     assert fake_client.uploaded_candidates == [candidate]
+    assert "Upload progress: 1/1 asset(s) processed" in caplog.text
 
 
 def test_run_uploads_uses_worker_clients_for_parallel_new_uploads(
-    tmp_path, steam_root, candidate_factory, monkeypatch
+    tmp_path, steam_root, candidate_factory, monkeypatch, caplog
 ) -> None:
+    caplog.set_level(logging.INFO, logger="steam2immich")
     state = FakeUploadState()
     uploaded_paths: list[str] = []
 
@@ -706,6 +710,8 @@ def test_run_uploads_uses_worker_clients_for_parallel_new_uploads(
         "asset-two",
     ]
     assert len(main_client.added_albums) == 2
+    assert "Upload progress: 1/2 asset(s) processed" in caplog.text
+    assert "Upload progress: 2/2 asset(s) processed" in caplog.text
 
 
 def test_run_uploads_completes_new_uploads_before_followups(
@@ -756,8 +762,9 @@ def test_run_uploads_completes_new_uploads_before_followups(
 
 
 def test_run_uploads_batches_album_and_tag_followups(
-    tmp_path, steam_root, candidate_factory, monkeypatch
+    tmp_path, steam_root, candidate_factory, monkeypatch, caplog
 ) -> None:
+    caplog.set_level(logging.INFO, logger="steam2immich")
     state = FakeUploadState()
     candidate_one = candidate_factory(chosen_path=tmp_path / "one.png")
     candidate_two = candidate_factory(chosen_path=tmp_path / "two.png")
@@ -788,6 +795,11 @@ def test_run_uploads_batches_album_and_tag_followups(
     )
     assert sorted(state.album_added) == sorted(state.records)
     assert sorted(state.tags_added) == sorted(state.records)
+    assert (
+        "Album follow-up progress for Steam Screenshots: 1/1 chunk(s) processed"
+        in caplog.text
+    )
+    assert "Tag follow-up progress for Steam: 1/1 chunk(s) processed" in caplog.text
 
 
 def test_run_uploads_chunks_large_album_and_tag_batches(

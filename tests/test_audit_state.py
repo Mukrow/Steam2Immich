@@ -1,3 +1,5 @@
+import logging
+
 from steam2immich.audit_state import audit_upload_state
 from steam2immich.upload_state import UploadState
 
@@ -24,8 +26,9 @@ class FakeAuditImmichClient:
 
 
 def test_audit_marks_pending_followups_complete_when_immich_has_them(
-    tmp_path, candidate_factory
+    tmp_path, candidate_factory, caplog
 ) -> None:
+    caplog.set_level(logging.INFO, logger="steam2immich.audit_state")
     state = UploadState(tmp_path / "upload_state.sqlite")
     state.record(
         "device-asset-id",
@@ -46,6 +49,7 @@ def test_audit_marks_pending_followups_complete_when_immich_has_them(
     assert record["tags_added"] is True
     assert summary.albums_marked_complete == 1
     assert summary.tags_marked_complete == 1
+    assert "Upload state audit progress: 1/1 records checked" in caplog.text
 
 
 def test_audit_marks_missing_followups_pending(tmp_path, candidate_factory) -> None:

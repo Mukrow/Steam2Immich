@@ -23,6 +23,7 @@ from .vdf_parser import parse_screenshots_vdf, parse_shortcut_names
 
 logger = logging.getLogger("steam2immich")
 FOLLOWUP_BATCH_SIZE = 200
+PROGRESS_LOG_INTERVAL = 100
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,10 @@ def _followup_chunks(
         pending_followups[index : index + FOLLOWUP_BATCH_SIZE]
         for index in range(0, len(pending_followups), FOLLOWUP_BATCH_SIZE)
     ]
+
+
+def _should_log_progress(done: int, total: int) -> bool:
+    return done == 1 or done == total or done % PROGRESS_LOG_INTERVAL == 0
 
 
 def run_sync(config: Config) -> int:
@@ -329,13 +334,14 @@ def _upload_new_assets(
 
     if worker_count == 1:
         pending_followups: list[PendingFollowup] = []
-        for pending_upload in pending_uploads:
+        for processed_count, pending_upload in enumerate(pending_uploads, start=1):
             completed_upload = _upload_pending_asset(immich_client, pending_upload)
             pending_followup = _record_completed_upload(
                 completed_upload, summary, upload_state
             )
             if pending_followup is not None:
                 pending_followups.append(pending_followup)
+            _log_upload_progress(processed_count, len(pending_uploads))
         return pending_followups
 
     pending_followups: list[PendingFollowup] = []
@@ -344,14 +350,24 @@ def _upload_new_assets(
             executor.submit(_upload_pending_asset_with_new_client, config, pending_upload)
             for pending_upload in pending_uploads
         ]
-        for future in as_completed(futures):
+        for processed_count, future in enumerate(as_completed(futures), start=1):
             pending_followup = _record_completed_upload(
                 future.result(), summary, upload_state
             )
             if pending_followup is not None:
                 pending_followups.append(pending_followup)
+            _log_upload_progress(processed_count, len(pending_uploads))
 
     return pending_followups
+
+
+def _log_upload_progress(processed_count: int, total_count: int) -> None:
+    if _should_log_progress(processed_count, total_count):
+        logger.info(
+            "Upload progress: %d/%d asset(s) processed",
+            processed_count,
+            total_count,
+        )
 
 
 def _upload_pending_asset_with_new_client(
@@ -486,7 +502,8 @@ def _complete_album_followups(
                 )
             continue
 
-        for album_chunk in _followup_chunks(album_followups):
+        album_chunks = _followup_chunks(album_followups)
+        for chunk_index, album_chunk in enumerate(album_chunks, start=1):
             try:
                 immich_client.add_assets_to_album(
                     album_id,
@@ -510,6 +527,20 @@ def _complete_album_followups(
                         pending_followup.asset_id,
                         album_name,
                     )
+            finally:
+                _log_album_followup_progress(album_name, chunk_index, len(album_chunks))
+
+
+def _log_album_followup_progress(
+    album_name: str, processed_chunks: int, total_chunks: int
+) -> None:
+    if _should_log_progress(processed_chunks, total_chunks):
+        logger.info(
+            "Album follow-up progress for %s: %d/%d chunk(s) processed",
+            album_name,
+            processed_chunks,
+            total_chunks,
+        )
 
 
 def _complete_tag_followups(
@@ -554,7 +585,8 @@ def _complete_tag_followups(
             )
             continue
 
-        for tag_chunk in _followup_chunks(tag_followups):
+        tag_chunks = _followup_chunks(tag_followups)
+        for chunk_index, tag_chunk in enumerate(tag_chunks, start=1):
             try:
                 immich_client.tag_assets(
                     tag_id,
@@ -578,6 +610,8 @@ def _complete_tag_followups(
                     tag_chunk,
                     successful_tag_names_by_device_asset_id,
                 )
+            finally:
+                _log_tag_followup_progress(tag_name, chunk_index, len(tag_chunks))
 
     for pending_followup in needed_followups:
         successful_tag_names = successful_tag_names_by_device_asset_id[
@@ -586,6 +620,16 @@ def _complete_tag_followups(
         if all(tag_name in successful_tag_names for tag_name in pending_followup.tag_names):
             upload_state.mark_tags_added(pending_followup.device_asset_id)
             upload_state.save()
+
+
+def _log_tag_followup_progress(tag_name: str, processed_chunks: int, total_chunks: int) -> None:
+    if _should_log_progress(processed_chunks, total_chunks):
+        logger.info(
+            "Tag follow-up progress for %s: %d/%d chunk(s) processed",
+            tag_name,
+            processed_chunks,
+            total_chunks,
+        )
 
 
 def _complete_tag_followup_fallback(

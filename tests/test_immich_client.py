@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 
 import pytest
 from conftest import FakeResponse, FakeSession
@@ -114,7 +115,8 @@ def test_get_asset_returns_none_for_immich_missing_asset_400() -> None:
     assert client.get_asset("asset-id") is None
 
 
-def test_album_contains_asset_uses_paginated_metadata_search() -> None:
+def test_album_contains_asset_uses_paginated_metadata_search(caplog) -> None:
+    caplog.set_level(logging.INFO, logger="steam2immich.immich_client")
     session = FakeSession(
         {
             "get": [
@@ -158,6 +160,12 @@ def test_album_contains_asset_uses_paginated_metadata_search() -> None:
         "page": 2,
         "size": 1000,
     }
+    assert "Loading Immich album membership album_id=album-id" in caplog.text
+    assert (
+        "Loading Immich album membership album_id=album-id page=2 assets_so_far=2"
+        in caplog.text
+    )
+    assert "Loaded Immich album membership album_id=album-id asset_count=2" in caplog.text
 
 
 def test_album_contains_asset_reuses_album_membership_cache() -> None:

@@ -10,6 +10,7 @@ from .upload_state import UploadState
 
 
 logger = logging.getLogger("steam2immich.audit_state")
+PROGRESS_LOG_INTERVAL = 100
 
 
 @dataclass
@@ -35,19 +36,20 @@ def audit_upload_state(
         return summary
 
     logger.info("Auditing %d local upload state record(s) against Immich.", len(records))
+    total_records = len(records)
     for device_asset_id, record in records.items():
         summary.checked += 1
-        asset_id = record.get("asset_id")
-        if not asset_id:
-            upload_state.record_error(device_asset_id, "audit: missing local Immich asset_id")
-            summary.failed += 1
-            logger.warning(
-                "Upload state audit found record without asset_id device_asset_id=%s",
-                device_asset_id,
-            )
-            continue
-
         try:
+            asset_id = record.get("asset_id")
+            if not asset_id:
+                upload_state.record_error(device_asset_id, "audit: missing local Immich asset_id")
+                summary.failed += 1
+                logger.warning(
+                    "Upload state audit found record without asset_id device_asset_id=%s",
+                    device_asset_id,
+                )
+                continue
+
             asset = immich_client.get_asset(str(asset_id))
             if asset is None:
                 upload_state.forget(device_asset_id)
@@ -77,6 +79,8 @@ def audit_upload_state(
                 asset_id,
                 error,
             )
+        finally:
+            _log_audit_progress(summary, total_records)
 
     logger.info(
         "Upload state audit complete: checked=%d removed_missing_assets=%d "
@@ -90,6 +94,26 @@ def audit_upload_state(
         summary.failed,
     )
     return summary
+
+
+def _log_audit_progress(summary: AuditStateSummary, total: int) -> None:
+    if not _should_log_progress(summary.checked, total):
+        return
+
+    logger.info(
+        "Upload state audit progress: %d/%d records checked "
+        "removed_missing_assets=%d albums_pending=%d tags_pending=%d failed=%d",
+        summary.checked,
+        total,
+        summary.removed_missing_assets,
+        summary.albums_marked_pending,
+        summary.tags_marked_pending,
+        summary.failed,
+    )
+
+
+def _should_log_progress(done: int, total: int) -> bool:
+    return done == 1 or done == total or done % PROGRESS_LOG_INTERVAL == 0
 
 
 def _audit_album(

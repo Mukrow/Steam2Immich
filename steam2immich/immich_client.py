@@ -182,7 +182,9 @@ class ImmichClient:
 
         asset_ids: set[str] = set()
         page: int | None = 1
+        logger.info("Loading Immich album membership album_id=%s", album_id)
         while page is not None:
+            current_page = page
             payload = self._search_album_assets_page(album_id, page)
             assets = payload.get("assets")
             if not isinstance(assets, dict):
@@ -202,9 +204,20 @@ class ImmichClient:
                     if isinstance(item_id, str) and item_id:
                         asset_ids.add(item_id)
 
+            logger.info(
+                "Loading Immich album membership album_id=%s page=%s assets_so_far=%d",
+                album_id,
+                current_page,
+                len(asset_ids),
+            )
             page = _next_search_page(assets.get("nextPage"))
 
         self._album_membership_cache[album_id] = asset_ids
+        logger.info(
+            "Loaded Immich album membership album_id=%s asset_count=%d",
+            album_id,
+            len(asset_ids),
+        )
         return asset_ids
 
     def _search_album_assets_page(self, album_id: str, page: int) -> dict[str, Any]:
