@@ -17,6 +17,7 @@ logger = logging.getLogger("steam2immich.immich_client")
 
 DEVICE_ID = "steam2immich"
 REQUEST_TIMEOUT_SECONDS = 30
+ALBUM_SEARCH_PAGE_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class ImmichClient:
             }
         )
         self._album_cache: dict[str, str] = {}
+        self._album_membership_cache: dict[str, set[str]] = {}
         self._tag_cache: dict[str, str] = {}
         self._tag_cache_loaded = False
 
@@ -170,27 +172,63 @@ class ImmichClient:
         if album_id is None:
             return False
 
+        return asset_id in self._album_asset_ids(album_id)
+
+    def _album_asset_ids(self, album_id: str) -> set[str]:
+        """Return all asset IDs in an album using Immich v3 metadata search."""
+
+        if album_id in self._album_membership_cache:
+            return self._album_membership_cache[album_id]
+
+        asset_ids: set[str] = set()
+        page: int | None = 1
+        while page is not None:
+            payload = self._search_album_assets_page(album_id, page)
+            assets = payload.get("assets")
+            if not isinstance(assets, dict):
+                raise ImmichClientError(
+                    f"Search metadata response did not include assets for album {album_id!r}"
+                )
+
+            items = assets.get("items")
+            if not isinstance(items, list):
+                raise ImmichClientError(
+                    f"Search metadata assets response did not include items for album {album_id!r}"
+                )
+
+            for item in items:
+                if isinstance(item, dict):
+                    item_id = item.get("id")
+                    if isinstance(item_id, str) and item_id:
+                        asset_ids.add(item_id)
+
+            page = _next_search_page(assets.get("nextPage"))
+
+        self._album_membership_cache[album_id] = asset_ids
+        return asset_ids
+
+    def _search_album_assets_page(self, album_id: str, page: int) -> dict[str, Any]:
+        """Fetch one page of assets scoped to an Immich album."""
+
         try:
-            response = self.session.get(
-                self._url(f"/albums/{album_id}"),
+            response = self.session.post(
+                self._url("/search/metadata"),
+                json={
+                    "albumIds": [album_id],
+                    "page": page,
+                    "size": ALBUM_SEARCH_PAGE_SIZE,
+                },
                 timeout=self.timeout,
             )
         except requests.RequestException as error:
-            raise ImmichClientError(f"Immich get album request failed: {error}") from error
-
-        if response.status_code == 404:
-            return False
-
-        payload = self._json_response(response, "get album")
-        if not isinstance(payload, dict):
-            raise ImmichClientError(f"Get album response was not an object: {payload}")
-
-        asset_ids = _asset_ids_from_album(payload)
-        if asset_ids is None:
             raise ImmichClientError(
-                f"Get album response did not include asset membership for {album_name!r}"
-            )
-        return asset_id in asset_ids
+                f"Immich search album assets request failed: {error}"
+            ) from error
+
+        payload = self._json_response(response, "search album assets")
+        if not isinstance(payload, dict):
+            raise ImmichClientError(f"Search metadata response was not an object: {payload}")
+        return payload
 
     def asset_has_tags(self, asset: dict[str, Any], tag_names: list[str]) -> bool:
         """Return whether an asset response includes all desired tag names."""
@@ -424,35 +462,22 @@ def _tag_name_candidates(tag: dict[str, Any]) -> list[str]:
     return candidates
 
 
-def _asset_ids_from_album(album: dict[str, Any]) -> set[str] | None:
-    """Extract album asset IDs from known Immich album response shapes."""
-
-    asset_values = None
-    for key in ("assets", "albumAssets"):
-        value = album.get(key)
-        if isinstance(value, list):
-            asset_values = value
-            break
-
-    if asset_values is None:
-        return None
-
-    asset_ids: set[str] = set()
-    for asset in asset_values:
-        if isinstance(asset, str):
-            asset_ids.add(asset)
-        elif isinstance(asset, dict):
-            asset_id = asset.get("id") or asset.get("assetId")
-            if isinstance(asset_id, str) and asset_id:
-                asset_ids.add(asset_id)
-
-    return asset_ids
-
-
 def _normalize_tag_name(name: str) -> str:
     """Normalize tag names for exact cache lookup while preserving case."""
 
     return "/".join(part.strip() for part in name.strip().split("/") if part.strip())
+
+
+def _next_search_page(next_page: Any) -> int | None:
+    """Normalize Immich search pagination values to the numeric API input."""
+
+    if next_page in (None, ""):
+        return None
+    if isinstance(next_page, int):
+        return next_page
+    if isinstance(next_page, str) and next_page.isdigit():
+        return int(next_page)
+    raise ImmichClientError(f"Search metadata response had invalid nextPage: {next_page!r}")
 
 
 def _is_existing_tag_response(response: requests.Response) -> bool:

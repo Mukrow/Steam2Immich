@@ -18,6 +18,7 @@ def _client_with_session(session: FakeSession) -> ImmichClient:
     client.timeout = 5
     client.session = session
     client._album_cache = {}
+    client._album_membership_cache = {}
     client._tag_cache = {}
     client._tag_cache_loaded = False
     return client
@@ -113,23 +114,88 @@ def test_get_asset_returns_none_for_immich_missing_asset_400() -> None:
     assert client.get_asset("asset-id") is None
 
 
-def test_album_contains_asset_checks_album_detail_membership() -> None:
+def test_album_contains_asset_uses_paginated_metadata_search() -> None:
     session = FakeSession(
         {
             "get": [
                 FakeResponse([{"albumName": "Steam", "id": "album-id"}]),
-                FakeResponse({"assets": [{"id": "asset-id"}]}),
             ],
-            "post": [],
+            "post": [
+                FakeResponse(
+                    {
+                        "assets": {
+                            "items": [{"id": "asset-one"}],
+                            "nextPage": "2",
+                        }
+                    }
+                ),
+                FakeResponse(
+                    {
+                        "assets": {
+                            "items": [{"id": "asset-two"}],
+                        }
+                    }
+                ),
+            ],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.album_contains_asset("Steam", "asset-two") is True
+    assert [call[1] for call in session.calls] == [
+        "https://immich.example/api/albums",
+        "https://immich.example/api/search/metadata",
+        "https://immich.example/api/search/metadata",
+    ]
+    assert session.calls[1][2]["json"] == {
+        "albumIds": ["album-id"],
+        "page": 1,
+        "size": 1000,
+    }
+    assert session.calls[2][2]["json"] == {
+        "albumIds": ["album-id"],
+        "page": 2,
+        "size": 1000,
+    }
+
+
+def test_album_contains_asset_reuses_album_membership_cache() -> None:
+    session = FakeSession(
+        {
+            "get": [FakeResponse([{"albumName": "Steam", "id": "album-id"}])],
+            "post": [
+                FakeResponse(
+                    {
+                        "assets": {
+                            "items": [{"id": "asset-id"}],
+                        }
+                    }
+                ),
+            ],
             "put": [],
         }
     )
     client = _client_with_session(session)
 
     assert client.album_contains_asset("Steam", "asset-id") is True
-    assert [call[1] for call in session.calls] == [
-        "https://immich.example/api/albums",
-        "https://immich.example/api/albums/album-id",
+    assert client.album_contains_asset("Steam", "missing-asset") is False
+    assert [call[0] for call in session.calls] == ["get", "post"]
+
+
+def test_album_contains_asset_returns_false_when_album_is_missing() -> None:
+    session = FakeSession(
+        {
+            "get": [FakeResponse([])],
+            "post": [],
+            "put": [],
+        }
+    )
+    client = _client_with_session(session)
+
+    assert client.album_contains_asset("Steam", "asset-id") is False
+    assert session.calls == [
+        ("get", "https://immich.example/api/albums", {"timeout": 5})
     ]
 
 

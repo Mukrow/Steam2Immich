@@ -104,9 +104,6 @@ def _audit_album(
     if not album_name:
         return
 
-    # TODO: Immich currently returns album metadata without contained assets in
-    # getAlbumInfo for some deployments. Revisit album membership audit when a
-    # reliable read endpoint is available.
     has_album = immich_client.album_contains_asset(str(album_name), asset_id)
     if has_album and record.get("album_added") is not True:
         upload_state.mark_album_added(device_asset_id)
