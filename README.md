@@ -74,14 +74,14 @@ early unless the server reports Immich v3.
 
 Required Immich API key permissions:
 
-- `asset.upload`
-- `album.read`
-- `album.create`
-- `albumAsset.create`
 - `asset.read`
-- `tag.read`
-- `tag.create`
+- `asset.upload`
+- `album.create`
+- `album.read`
+- `albumAsset.create`
 - `tag.asset`
+- `tag.create`
+- `tag.read`
 
 ## Usage
 
